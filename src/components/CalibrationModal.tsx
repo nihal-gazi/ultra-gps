@@ -11,11 +11,11 @@ interface CalibrationModalProps {
 
 const DEFAULT_CONFIG: CalibrationConfig = {
   weinbergK: 0.45,
-  peakThreshold: 0.42,
-  minStepIntervalMs: 240,
-  smoothingFactor: 0.25,
+  peakThreshold: 0.25,
+  minStepIntervalMs: 200,
+  smoothingFactor: 0.35,
   gyroWeight: 0.94,
-  stationaryVarianceThreshold: 0.18,
+  stationaryVarianceThreshold: 0.02,
 };
 
 export const CalibrationModal: React.FC<CalibrationModalProps> = ({

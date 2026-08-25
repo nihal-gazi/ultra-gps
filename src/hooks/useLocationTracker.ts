@@ -92,20 +92,36 @@ export function useLocationTracker() {
   useEffect(() => {
     // 1. DeviceMotion Handler (Accelerometer + Gyroscope 3-Axis)
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
-      const accel = event.acceleration || event.accelerationIncludingGravity;
-      if (!accel) return;
+      let ax = 0;
+      let ay = 0;
+      let az = 0;
+      let hasGravity = false;
 
-      const ax = accel.x ?? 0;
-      const ay = accel.y ?? 0;
-      const az = accel.z ?? 0;
-
-      if (accel.x === null && accel.y === null && accel.z === null) {
+      if (
+        event.acceleration &&
+        event.acceleration.x !== null &&
+        event.acceleration.y !== null &&
+        event.acceleration.z !== null
+      ) {
+        ax = event.acceleration.x;
+        ay = event.acceleration.y;
+        az = event.acceleration.z;
+        hasGravity = false;
+      } else if (
+        event.accelerationIncludingGravity &&
+        event.accelerationIncludingGravity.x !== null &&
+        event.accelerationIncludingGravity.y !== null &&
+        event.accelerationIncludingGravity.z !== null
+      ) {
+        ax = event.accelerationIncludingGravity.x;
+        ay = event.accelerationIncludingGravity.y;
+        az = event.accelerationIncludingGravity.z;
+        hasGravity = true;
+      } else {
         return;
       }
 
       motionCountRef.current += 1;
-
-      const hasGravity = !event.acceleration && !!event.accelerationIncludingGravity;
 
       // Extract 3-Axis Gyroscope Angular Velocity (deg/s)
       const rot = event.rotationRate;

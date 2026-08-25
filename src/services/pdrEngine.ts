@@ -68,11 +68,11 @@ export class PDREngine {
 
   private config: CalibrationConfig = {
     weinbergK: 0.45,
-    peakThreshold: 0.42,
-    minStepIntervalMs: 240,
-    smoothingFactor: 0.25,
+    peakThreshold: 0.25,
+    minStepIntervalMs: 200,
+    smoothingFactor: 0.35,
     gyroWeight: 0.94,
-    stationaryVarianceThreshold: 0.18,
+    stationaryVarianceThreshold: 0.02,
   };
 
   private recentMotion: MotionSample[] = [];
@@ -82,8 +82,8 @@ export class PDREngine {
 
   // Filter instances
   private gravityFilter = new OrientationInvariantGravityFilter();
-  private magnitudeLpf = new LowPassFilter(0.25);
-  private stepDetector = new StepDetector(0.45, 0.42, 240, 0.18);
+  private magnitudeLpf = new LowPassFilter(0.35);
+  private stepDetector = new StepDetector(0.45, 0.25, 200, 0.02, 9);
   private headingFilter = new SmoothHeadingFilter(0);
 
   // Step timestamps for cadence calculation (sliding window of 10s)
