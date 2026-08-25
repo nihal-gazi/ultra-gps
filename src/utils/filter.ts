@@ -217,7 +217,7 @@ export class StepDetector {
     for (let i = 0; i <= midIdx; i++) {
       forwardSurge += this.forwardBuffer[i];
     }
-    const detectedDirection: WalkDirection = forwardSurge < -0.4 ? 'BACKWARD' : 'FORWARD';
+    const detectedDirection: WalkDirection = forwardSurge < -0.15 ? 'BACKWARD' : 'FORWARD';
 
     this.lastStepTimestamp = candidateTimestamp;
 
