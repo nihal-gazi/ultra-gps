@@ -1,0 +1,466 @@
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { pdrEngine } from '../services/pdrEngine';
+import type { PDRState } from '../services/pdrEngine';
+import type { SensorStatus, TrackingMode, CalibrationConfig } from '../types';
+
+export function useLocationTracker() {
+  const [pdrState, setPdrState] = useState<PDRState>(() => pdrEngine.getState());
+  const [gpsEnabled, setGpsEnabled] = useState<boolean>(true);
+  const [sensorStatus, setSensorStatus] = useState<SensorStatus>({
+    gpsAvailable: 'geolocation' in navigator,
+    gpsActive: false,
+    gpsStatusText: 'Initializing GPS...',
+    hasInitialFix: false,
+    gyroAvailable: false,
+    accelAvailable: false,
+    hasHardwareMotion: false,
+    motionEventCount: 0,
+    permissionGranted: false,
+    isSimulating: false,
+  });
+
+  const watchIdRef = useRef<number | null>(null);
+  const simIntervalRef = useRef<number | null>(null);
+  const simStepPhaseRef = useRef<number>(0);
+  const motionCountRef = useRef<number>(0);
+
+  // Subscribe to PDR Engine state updates
+  useEffect(() => {
+    const unsubscribe = pdrEngine.subscribe((newState) => {
+      setPdrState(newState);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Request Device Sensor Permissions (iOS 13+ & modern mobile browsers)
+  const requestSensorPermissions = useCallback(async (): Promise<boolean> => {
+    try {
+      let granted = true;
+
+      // Check if iOS DeviceOrientationEvent requires permission
+      if (
+        typeof (DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> })
+          .requestPermission === 'function'
+      ) {
+        const response = await (
+          DeviceOrientationEvent as unknown as { requestPermission: () => Promise<string> }
+        ).requestPermission();
+        granted = granted && response === 'granted';
+      }
+
+      // Check if iOS DeviceMotionEvent requires permission
+      if (
+        typeof (DeviceMotionEvent as unknown as { requestPermission?: () => Promise<string> })
+          .requestPermission === 'function'
+      ) {
+        const motionResponse = await (
+          DeviceMotionEvent as unknown as { requestPermission: () => Promise<string> }
+        ).requestPermission();
+        granted = granted && motionResponse === 'granted';
+      }
+
+      // Query Chromium Permissions API for sensors if available
+      if ('permissions' in navigator) {
+        try {
+          await Promise.all([
+            (navigator.permissions as any).query({ name: 'accelerometer' }).catch(() => null),
+            (navigator.permissions as any).query({ name: 'gyroscope' }).catch(() => null),
+          ]);
+        } catch {
+          // not supported on all browsers
+        }
+      }
+
+      setSensorStatus((prev) => ({
+        ...prev,
+        permissionGranted: granted,
+        gyroAvailable: granted,
+        accelAvailable: granted,
+      }));
+
+      return granted;
+    } catch (err) {
+      console.warn('Sensor permission request fallback:', err);
+      setSensorStatus((prev) => ({
+        ...prev,
+        permissionGranted: true,
+      }));
+      return true;
+    }
+  }, []);
+
+  // Hardware IMU Sensor Listeners (DeviceMotion & DeviceOrientation)
+  useEffect(() => {
+    const handleDeviceMotion = (event: DeviceMotionEvent) => {
+      const accel = event.acceleration || event.accelerationIncludingGravity;
+      if (!accel) return;
+
+      const ax = accel.x ?? 0;
+      const ay = accel.y ?? 0;
+      const az = accel.z ?? 0;
+
+      // Skip if all values are null
+      if (accel.x === null && accel.y === null && accel.z === null) {
+        return;
+      }
+
+      motionCountRef.current += 1;
+
+      const hasGravity = !event.acceleration && !!event.accelerationIncludingGravity;
+      const gyroZ = event.rotationRate?.alpha ?? event.rotationRate?.gamma ?? null;
+
+      setSensorStatus((prev) => ({
+        ...prev,
+        accelAvailable: true,
+        gyroAvailable: event.rotationRate !== null || prev.gyroAvailable,
+        hasHardwareMotion: true,
+        motionEventCount: motionCountRef.current,
+      }));
+
+      pdrEngine.processDeviceMotion(ax, ay, az, gyroZ, hasGravity, Date.now());
+    };
+
+    const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
+      const alpha = event.alpha;
+      const beta = event.beta;
+      const gamma = event.gamma;
+      const webkitHeading = (event as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
+      const absolute = (event as unknown as { absolute?: boolean }).absolute ?? false;
+
+      if (alpha !== null || webkitHeading !== undefined) {
+        setSensorStatus((prev) => ({
+          ...prev,
+          gyroAvailable: true,
+        }));
+        pdrEngine.updateOrientation(alpha, beta, gamma, webkitHeading, absolute);
+      }
+    };
+
+    window.addEventListener('devicemotion', handleDeviceMotion, { passive: true });
+    window.addEventListener('deviceorientation', handleDeviceOrientation, { passive: true });
+    window.addEventListener('deviceorientationabsolute', handleDeviceOrientation as EventListener, {
+      passive: true,
+    });
+
+    // Also attempt W3C Generic Sensor API if available in Chromium
+    let genericSensors: any[] = [];
+    try {
+      if ('LinearAccelerationSensor' in window) {
+        const sensor = new (window as any).LinearAccelerationSensor({ frequency: 50 });
+        sensor.addEventListener('reading', () => {
+          motionCountRef.current += 1;
+          setSensorStatus((prev) => ({
+            ...prev,
+            accelAvailable: true,
+            hasHardwareMotion: true,
+            motionEventCount: motionCountRef.current,
+          }));
+          pdrEngine.processDeviceMotion(sensor.x ?? 0, sensor.y ?? 0, sensor.z ?? 0, null, false, Date.now());
+        });
+        sensor.start();
+        genericSensors.push(sensor);
+      }
+    } catch (err) {
+      // Generic sensors not allowed or not supported
+    }
+
+    return () => {
+      window.removeEventListener('devicemotion', handleDeviceMotion);
+      window.removeEventListener('deviceorientation', handleDeviceOrientation);
+      window.removeEventListener('deviceorientationabsolute', handleDeviceOrientation as EventListener);
+      genericSensors.forEach((s) => {
+        try {
+          s.stop();
+        } catch {}
+      });
+    };
+  }, []);
+
+  // IP Geolocation fallback to seed starting coordinates
+  const fetchIpGeolocation = useCallback(async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+      const endpoints = [
+        'https://get.geojs.io/v1/ip/geo.json',
+        'https://ipapi.co/json/',
+      ];
+
+      for (const url of endpoints) {
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          if (res.ok) {
+            const data = await res.json();
+            const lat = parseFloat(data.latitude);
+            const lng = parseFloat(data.longitude);
+            if (!isNaN(lat) && !isNaN(lng)) {
+              clearTimeout(timeoutId);
+              pdrEngine.setInitialApproximateLocation(lat, lng);
+              setSensorStatus((prev) => {
+                if (!prev.hasInitialFix) {
+                  return {
+                    ...prev,
+                    gpsStatusText: `Coarse location found: ${data.city || 'Local area'} (Acquiring precision GPS...)`,
+                  };
+                }
+                return prev;
+              });
+              return;
+            }
+          }
+        } catch {}
+      }
+      clearTimeout(timeoutId);
+    } catch (err) {
+      console.warn('IP fallback notice:', err);
+    }
+  }, []);
+
+  // Primary GPS Acquisition Function
+  const acquireCurrentLocation = useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      setSensorStatus((prev) => ({
+        ...prev,
+        gpsAvailable: false,
+        gpsActive: false,
+        gpsStatusText: 'Geolocation API not supported',
+      }));
+      pdrEngine.setMode('DEAD_RECKONING');
+      return;
+    }
+
+    setSensorStatus((prev) => ({
+      ...prev,
+      gpsStatusText: 'Requesting GPS coordinates...',
+    }));
+
+    // Step 1: Try High Accuracy GPS first
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        pdrEngine.updateGpsPosition(pos.coords, pos.timestamp);
+        setSensorStatus((prev) => ({
+          ...prev,
+          gpsActive: true,
+          hasInitialFix: true,
+          gpsStatusText: `GPS Lock (Accuracy: ±${Math.round(pos.coords.accuracy)}m)`,
+        }));
+      },
+      (highAccError) => {
+        console.warn('High-accuracy GPS failed, trying standard:', highAccError.message);
+        
+        // Step 2: Retry with standard (low) accuracy (Wi-Fi/Cell towers)
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            pdrEngine.updateGpsPosition(pos.coords, pos.timestamp);
+            setSensorStatus((prev) => ({
+              ...prev,
+              gpsActive: true,
+              hasInitialFix: true,
+              gpsStatusText: `GPS Lock (Standard: ±${Math.round(pos.coords.accuracy)}m)`,
+            }));
+          },
+          (lowAccError) => {
+            console.warn('Standard GPS failed:', lowAccError.message);
+            setSensorStatus((prev) => ({
+              ...prev,
+              gpsActive: false,
+              gpsStatusText: `GPS unavailable (${lowAccError.message}). Using Dead Reckoning.`,
+            }));
+            fetchIpGeolocation();
+          },
+          { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+  }, [fetchIpGeolocation]);
+
+  // Geolocation Watcher Lifecycle
+  useEffect(() => {
+    if (!gpsEnabled) {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      pdrEngine.setMode('DEAD_RECKONING');
+      setSensorStatus((prev) => ({
+        ...prev,
+        gpsActive: false,
+        gpsStatusText: 'GPS Disabled (Using IMU Dead Reckoning)',
+      }));
+      return;
+    }
+
+    if (!('geolocation' in navigator)) {
+      pdrEngine.setMode('DEAD_RECKONING');
+      setSensorStatus((prev) => ({
+        ...prev,
+        gpsAvailable: false,
+        gpsActive: false,
+        gpsStatusText: 'Geolocation not supported',
+      }));
+      return;
+    }
+
+    // Immediately acquire location
+    acquireCurrentLocation();
+
+    // Start background watchPosition
+    try {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          pdrEngine.updateGpsPosition(pos.coords, pos.timestamp);
+          setSensorStatus((prev) => ({
+            ...prev,
+            gpsActive: true,
+            hasInitialFix: true,
+            gpsStatusText: `GPS Lock (±${Math.round(pos.coords.accuracy)}m)`,
+          }));
+        },
+        (err) => {
+          console.warn('GPS watcher notice:', err.message);
+          setSensorStatus((prev) => ({
+            ...prev,
+            gpsActive: false,
+            gpsStatusText: `GPS lost (${err.message}) - Dead Reckoning active`,
+          }));
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 2000,
+          timeout: 15000,
+        }
+      );
+    } catch (e) {
+      console.warn('watchPosition error:', e);
+    }
+
+    return () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+    };
+  }, [gpsEnabled, acquireCurrentLocation]);
+
+  // Global Keyboard Controls for Instant Testing (Desktop/Laptop)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      if (e.code === 'KeyW' || e.code === 'ArrowUp') {
+        e.preventDefault();
+        pdrEngine.injectSimulatedStep(0.75);
+      } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
+        e.preventDefault();
+        const current = pdrEngine.getState().headingData.heading;
+        pdrEngine.setManualHeading((current + 180) % 360);
+        pdrEngine.injectSimulatedStep(0.75);
+        pdrEngine.setManualHeading(current);
+      } else if (e.code === 'KeyA' || e.code === 'ArrowLeft') {
+        e.preventDefault();
+        const current = pdrEngine.getState().headingData.heading;
+        pdrEngine.setManualHeading((current - 15 + 360) % 360);
+      } else if (e.code === 'KeyD' || e.code === 'ArrowRight') {
+        e.preventDefault();
+        const current = pdrEngine.getState().headingData.heading;
+        pdrEngine.setManualHeading((current + 15) % 360);
+      } else if (e.code === 'Space') {
+        e.preventDefault();
+        toggleWalkingSimulator();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Toggle GPS on/off
+  const toggleGps = useCallback(() => {
+    setGpsEnabled((prev) => !prev);
+  }, []);
+
+  // Set Mode Manually
+  const setMode = useCallback((mode: TrackingMode) => {
+    pdrEngine.setMode(mode);
+    if (mode === 'DEAD_RECKONING') {
+      setGpsEnabled(false);
+    } else if (mode === 'GPS') {
+      setGpsEnabled(true);
+    }
+  }, []);
+
+  // Step Injection
+  const injectStep = useCallback((stepLength: number = 0.72) => {
+    pdrEngine.injectSimulatedStep(stepLength);
+  }, []);
+
+  // Continuous Walking Simulator
+  const toggleWalkingSimulator = useCallback(() => {
+    if (simIntervalRef.current !== null) {
+      window.clearInterval(simIntervalRef.current);
+      simIntervalRef.current = null;
+      setSensorStatus((prev) => ({ ...prev, isSimulating: false }));
+    } else {
+      setSensorStatus((prev) => ({ ...prev, isSimulating: true }));
+      simStepPhaseRef.current = 0;
+
+      simIntervalRef.current = window.setInterval(() => {
+        simStepPhaseRef.current += 0.14;
+        const phase = simStepPhaseRef.current;
+
+        const ax = Math.sin(phase * 0.5) * 0.5 + (Math.random() - 0.5) * 0.15;
+        const ay = Math.sin(phase) * 2.2 + Math.cos(phase * 2) * 0.5 + (Math.random() - 0.5) * 0.2;
+        const az = 9.81 + Math.cos(phase) * 1.6 + (Math.random() - 0.5) * 0.2;
+        const gyroZ = (Math.random() - 0.5) * 1.5;
+
+        pdrEngine.processDeviceMotion(ax, ay, az, gyroZ, true, Date.now());
+      }, 25);
+    }
+  }, []);
+
+  // Cleanup simulator on unmount
+  useEffect(() => {
+    return () => {
+      if (simIntervalRef.current !== null) {
+        window.clearInterval(simIntervalRef.current);
+      }
+    };
+  }, []);
+
+  const setManualHeading = useCallback((heading: number) => {
+    pdrEngine.setManualHeading(heading);
+  }, []);
+
+  const setManualLocation = useCallback((lat: number, lng: number) => {
+    pdrEngine.setManualLocation(lat, lng);
+    setSensorStatus((prev) => ({ ...prev, hasInitialFix: true }));
+  }, []);
+
+  const resetTracking = useCallback(() => {
+    pdrEngine.resetPathAndMetrics();
+  }, []);
+
+  const updateCalibration = useCallback((config: Partial<CalibrationConfig>) => {
+    pdrEngine.updateCalibration(config);
+  }, []);
+
+  return {
+    state: pdrState,
+    gpsEnabled,
+    sensorStatus,
+    toggleGps,
+    setMode,
+    injectStep,
+    toggleWalkingSimulator,
+    setManualHeading,
+    setManualLocation,
+    resetTracking,
+    updateCalibration,
+    requestSensorPermissions,
+    acquireCurrentLocation,
+  };
+}
