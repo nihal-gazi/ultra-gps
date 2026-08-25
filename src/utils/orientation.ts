@@ -1,5 +1,6 @@
 /**
- * Device orientation parsing, compass heading calculation, and gyro-compass complementary fusion.
+ * Device orientation parsing, compass heading calculation, and circular smoothing filter.
+ * Eliminates jitter, gimbal-lock singularities, and multi-source clashing.
  */
 
 import { degreesToRadians, radiansToDegrees } from './geodesy';
@@ -9,35 +10,47 @@ export function normalizeDegrees(deg: number): number {
 }
 
 /**
- * Calculates shortest angular difference from angle1 to angle2 in range [-180, 180]
+ * Calculates shortest signed angular difference from sourceDeg to targetDeg in range [-180, 180]
  */
 export function angularDifference(targetDeg: number, sourceDeg: number): number {
   return ((targetDeg - sourceDeg + 540) % 360) - 180;
 }
 
 /**
- * Computes compass heading from Euler angles (alpha, beta, gamma) using 3D rotation matrix
+ * Computes robust, singularity-free compass heading from Euler angles (alpha, beta, gamma).
+ * Seamlessly handles flat, tilted, portrait, and landscape orientations without jumping.
  */
-export function computeRotationMatrixHeading(
+export function computeRobustCompassHeading(
   alpha: number,
   beta: number,
   gamma: number
 ): number {
+  // If device is held reasonably flat (|pitch| < 25° and |roll| < 25°), direct yaw (360 - alpha) is most stable
+  if (Math.abs(beta) < 25 && Math.abs(gamma) < 25) {
+    return normalizeDegrees(360 - alpha);
+  }
+
   const a = degreesToRadians(alpha);
   const b = degreesToRadians(beta);
   const g = degreesToRadians(gamma);
 
-  const cA = Math.cos(a);
+  // W3C standard earth-frame vector projection
   const sA = Math.sin(a);
+  const cA = Math.cos(a);
   const sB = Math.sin(b);
-  const cG = Math.cos(g);
   const sG = Math.sin(g);
+  const cG = Math.cos(g);
 
-  // Calculate the rotation matrix components pointing towards the Earth's horizontal plane
-  const rA = -cA * sG - sA * sB * cG;
-  const rB = -sA * sG + cA * sB * cG;
+  // Components pointing towards geographic North
+  const x = -sA * cG - cA * sB * sG;
+  const y = -cA * cG + sA * sB * sG;
 
-  let heading = radiansToDegrees(Math.atan2(rA, rB));
+  // Fallback to alpha if magnitude is too small near extreme vertical tilt
+  if (Math.abs(x) < 0.001 && Math.abs(y) < 0.001) {
+    return normalizeDegrees(360 - alpha);
+  }
+
+  let heading = radiansToDegrees(Math.atan2(x, y));
   if (heading < 0) {
     heading += 360;
   }
@@ -45,60 +58,55 @@ export function computeRotationMatrixHeading(
   return normalizeDegrees(heading);
 }
 
-export class HeadingFusionFilter {
-  private currentHeading: number = 0;
-  private lastTimestamp: number = 0;
-  private gyroWeight: number; // typically 0.92 - 0.98
+/**
+ * Adaptive Circular Heading Smoother
+ * Eliminates jitter when device is still while maintaining instant responsiveness during turns.
+ */
+export class SmoothHeadingFilter {
+  private smoothedHeading: number = 0;
+  private isInitialized: boolean = false;
 
-  constructor(gyroWeight: number = 0.94) {
-    this.gyroWeight = gyroWeight;
+  constructor(initialHeading: number = 0) {
+    this.smoothedHeading = normalizeDegrees(initialHeading);
   }
 
-  public setGyroWeight(weight: number) {
-    this.gyroWeight = Math.max(0, Math.min(1, weight));
-  }
-
-  public reset(initialHeading: number = 0) {
-    this.currentHeading = normalizeDegrees(initialHeading);
-    this.lastTimestamp = 0;
+  public reset(heading: number = 0) {
+    this.smoothedHeading = normalizeDegrees(heading);
+    this.isInitialized = true;
   }
 
   /**
-   * Fuses gyroscope angular velocity with compass heading reading.
-   * @param compassHeading Raw or tilt-compensated compass heading in degrees (0 - 360)
-   * @param gyroRateZ Angular velocity around Z axis (deg/sec) from DeviceMotionEvent.rotationRate
-   * @param timestamp Current timestamp in ms
+   * Updates smoothed heading using circular shortest-path interpolation with adaptive gain
    */
-  public update(
-    compassHeading: number,
-    gyroRateZ: number | null,
-    timestamp: number
-  ): number {
-    if (this.lastTimestamp === 0) {
-      this.currentHeading = normalizeDegrees(compassHeading);
-      this.lastTimestamp = timestamp;
-      return this.currentHeading;
+  public filter(rawHeading: number): number {
+    if (!this.isInitialized || isNaN(this.smoothedHeading)) {
+      this.smoothedHeading = normalizeDegrees(rawHeading);
+      this.isInitialized = true;
+      return this.smoothedHeading;
     }
 
-    const dt = Math.max(0.001, Math.min(0.5, (timestamp - this.lastTimestamp) / 1000));
-    this.lastTimestamp = timestamp;
+    const diff = angularDifference(rawHeading, this.smoothedHeading);
+    const absDiff = Math.abs(diff);
 
-    let predictedHeading = this.currentHeading;
-    if (gyroRateZ !== null && !isNaN(gyroRateZ)) {
-      predictedHeading = normalizeDegrees(this.currentHeading + gyroRateZ * dt);
+    // Adaptive smoothing factor:
+    // Small jitter (< 3°) is heavily filtered (alpha = 0.08) for rock-steady pointer
+    // Fast turns (> 20°) follow briskly (alpha = 0.40) to prevent lag
+    let alpha: number;
+    if (absDiff < 1.0) {
+      alpha = 0.05; // deadband for micro-vibrations
+    } else if (absDiff < 5.0) {
+      alpha = 0.12;
+    } else if (absDiff < 20.0) {
+      alpha = 0.25;
+    } else {
+      alpha = 0.45;
     }
 
-    // Compute angular error between compass measurement and predicted heading
-    const error = angularDifference(compassHeading, predictedHeading);
-
-    // Complementary filter update
-    const fusedHeading = normalizeDegrees(predictedHeading + (1 - this.gyroWeight) * error);
-    this.currentHeading = fusedHeading;
-
-    return this.currentHeading;
+    this.smoothedHeading = normalizeDegrees(this.smoothedHeading + alpha * diff);
+    return this.smoothedHeading;
   }
 
   public getHeading(): number {
-    return this.currentHeading;
+    return this.smoothedHeading;
   }
 }

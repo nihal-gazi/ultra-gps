@@ -23,6 +23,7 @@ export function useLocationTracker() {
   const simIntervalRef = useRef<number | null>(null);
   const simStepPhaseRef = useRef<number>(0);
   const motionCountRef = useRef<number>(0);
+  const hasAbsoluteOrientationRef = useRef<boolean>(false);
 
   // Subscribe to PDR Engine state updates
   useEffect(() => {
@@ -66,9 +67,7 @@ export function useLocationTracker() {
             (navigator.permissions as any).query({ name: 'accelerometer' }).catch(() => null),
             (navigator.permissions as any).query({ name: 'gyroscope' }).catch(() => null),
           ]);
-        } catch {
-          // not supported on all browsers
-        }
+        } catch {}
       }
 
       setSensorStatus((prev) => ({
@@ -89,8 +88,9 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Hardware IMU Sensor Listeners
+  // Clean, Single-Source Orientation & Motion Listeners with Gyroscope Extraction
   useEffect(() => {
+    // 1. DeviceMotion Handler (Accelerometer + Gyroscope 3-Axis)
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
       const accel = event.acceleration || event.accelerationIncludingGravity;
       if (!accel) return;
@@ -106,45 +106,73 @@ export function useLocationTracker() {
       motionCountRef.current += 1;
 
       const hasGravity = !event.acceleration && !!event.accelerationIncludingGravity;
-      const gyroZ = event.rotationRate?.alpha ?? event.rotationRate?.gamma ?? null;
+
+      // Extract 3-Axis Gyroscope Angular Velocity (deg/s)
+      const rot = event.rotationRate;
+      const gx = rot?.beta ?? 0;   // X-axis (Pitch rate)
+      const gy = rot?.gamma ?? 0;  // Y-axis (Roll rate)
+      const gz = rot?.alpha ?? 0;  // Z-axis (Yaw rate)
+
+      const hasGyroData = rot !== null && (rot.alpha !== null || rot.beta !== null || rot.gamma !== null);
 
       setSensorStatus((prev) => ({
         ...prev,
         accelAvailable: true,
-        gyroAvailable: event.rotationRate !== null || prev.gyroAvailable,
+        gyroAvailable: hasGyroData || prev.gyroAvailable,
         hasHardwareMotion: true,
         motionEventCount: motionCountRef.current,
       }));
 
-      pdrEngine.processDeviceMotion(ax, ay, az, gyroZ, hasGravity, Date.now());
+      pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, hasGravity, Date.now());
     };
 
-    const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
-      const alpha = event.alpha;
-      const beta = event.beta;
-      const gamma = event.gamma;
-      const webkitHeading = (event as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
-      const absolute = (event as unknown as { absolute?: boolean }).absolute ?? false;
+    // 2. Absolute Orientation Handler (Android Magnetic North)
+    const handleAbsoluteOrientation = (event: DeviceOrientationEvent) => {
+      if (event.alpha === null) return;
+      hasAbsoluteOrientationRef.current = true;
 
-      if (alpha !== null || webkitHeading !== undefined) {
+      setSensorStatus((prev) => ({
+        ...prev,
+        gyroAvailable: true,
+      }));
+
+      pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, undefined, true);
+    };
+
+    // 3. Standard Orientation Handler (iOS Safari & Fallback)
+    const handleStandardOrientation = (event: DeviceOrientationEvent) => {
+      const webkitHeading = (event as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
+
+      // On iOS: webkitCompassHeading is always preferred
+      if (webkitHeading !== undefined && !isNaN(webkitHeading)) {
         setSensorStatus((prev) => ({
           ...prev,
           gyroAvailable: true,
         }));
-        pdrEngine.updateOrientation(alpha, beta, gamma, webkitHeading, absolute);
+        pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, webkitHeading, true);
+        return;
+      }
+
+      // On Android / desktop: Only use deviceorientation if deviceorientationabsolute is NOT active
+      if (!hasAbsoluteOrientationRef.current && event.alpha !== null) {
+        setSensorStatus((prev) => ({
+          ...prev,
+          gyroAvailable: true,
+        }));
+        pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, undefined, false);
       }
     };
 
     window.addEventListener('devicemotion', handleDeviceMotion, { passive: true });
-    window.addEventListener('deviceorientation', handleDeviceOrientation, { passive: true });
-    window.addEventListener('deviceorientationabsolute', handleDeviceOrientation as EventListener, {
+    window.addEventListener('deviceorientationabsolute', handleAbsoluteOrientation as EventListener, {
       passive: true,
     });
+    window.addEventListener('deviceorientation', handleStandardOrientation, { passive: true });
 
     return () => {
       window.removeEventListener('devicemotion', handleDeviceMotion);
-      window.removeEventListener('deviceorientation', handleDeviceOrientation);
-      window.removeEventListener('deviceorientationabsolute', handleDeviceOrientation as EventListener);
+      window.removeEventListener('deviceorientationabsolute', handleAbsoluteOrientation as EventListener);
+      window.removeEventListener('deviceorientation', handleStandardOrientation);
     };
   }, []);
 
@@ -363,7 +391,7 @@ export function useLocationTracker() {
     pdrEngine.injectSimulatedStep(stepLength, direction);
   }, []);
 
-  // Continuous Walking Simulator
+  // Continuous Walking Simulator with realistic 3-axis Accelerometer and 3-axis Gyroscope waveforms
   const toggleWalkingSimulator = useCallback(() => {
     if (simIntervalRef.current !== null) {
       window.clearInterval(simIntervalRef.current);
@@ -377,12 +405,17 @@ export function useLocationTracker() {
         simStepPhaseRef.current += 0.14;
         const phase = simStepPhaseRef.current;
 
+        // Realistic gait accelerations
         const ax = Math.sin(phase * 0.5) * 0.5 + (Math.random() - 0.5) * 0.15;
         const ay = Math.sin(phase) * 2.2 + Math.cos(phase * 2) * 0.5 + (Math.random() - 0.5) * 0.2;
         const az = 9.81 + Math.cos(phase) * 1.6 + (Math.random() - 0.5) * 0.2;
-        const gyroZ = (Math.random() - 0.5) * 1.5;
 
-        pdrEngine.processDeviceMotion(ax, ay, az, gyroZ, true, Date.now());
+        // Realistic gait angular velocities (Pitch, Roll, Yaw rates in deg/s)
+        const gx = Math.sin(phase) * 14.5 + (Math.random() - 0.5) * 2.0;   // Pitch oscillation
+        const gy = Math.cos(phase * 0.5) * 8.2 + (Math.random() - 0.5) * 1.5; // Pelvic sway / roll
+        const gz = Math.sin(phase * 0.5) * 5.0 + (Math.random() - 0.5) * 1.0; // Torso yaw rate
+
+        pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, true, Date.now());
       }, 25);
     }
   }, []);

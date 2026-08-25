@@ -29,6 +29,10 @@ export interface MotionSample {
   isPeak: boolean;
   stepLength: number;
   isStationary: boolean;
+  gx: number; // Gyro rotation rate X (deg/s)
+  gy: number; // Gyro rotation rate Y (deg/s)
+  gz: number; // Gyro rotation rate Z (deg/s)
+  gyroMagnitude: number; // Combined angular velocity magnitude (deg/s)
 }
 
 export interface StepMetrics {

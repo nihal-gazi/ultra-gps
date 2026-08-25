@@ -34,11 +34,11 @@ export const MapView: React.FC<MapViewProps> = ({
   const drPolylineRef = useRef<L.Polyline | null>(null);
   const autoFollowRef = useRef<boolean>(true);
   const initialCenteredRef = useRef<boolean>(false);
+  const prevModeRef = useRef<TrackingMode>(mode);
 
   const [activeLayer, setActiveLayer] = useState<MapLayerType>('satellite');
   const [currentZoom, setCurrentZoom] = useState<number>(18);
 
-  // Define tile layers with ultra-deep infinite zoom (maxZoom 26, upscaling native zoom)
   const getTileLayerConfig = (type: MapLayerType): { url: string; options: L.TileLayerOptions } => {
     switch (type) {
       case 'satellite':
@@ -74,7 +74,7 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   };
 
-  // Initialize Map with Infinite Zoom settings
+  // Initialize Map with Infinite Zoom
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
@@ -82,37 +82,32 @@ export const MapView: React.FC<MapViewProps> = ({
       center: [location.latitude, location.longitude],
       zoom: 18,
       minZoom: 1,
-      maxZoom: 26, // Infinite / Ultra-Deep Zoom
+      maxZoom: 26,
       zoomSnap: 0.5,
       zoomDelta: 0.5,
       zoomControl: false,
     });
 
-    // Add Initial Tile Layer
     const config = getTileLayerConfig('satellite');
     const initialTiles = L.tileLayer(config.url, config.options).addTo(map);
     tileLayerRef.current = initialTiles;
 
-    // Track zoom level changes
     map.on('zoomend', () => {
       setCurrentZoom(Number(map.getZoom().toFixed(1)));
     });
 
-    // Click on map to reposition (convenient for indoor testing)
     map.on('click', (e: L.LeafletMouseEvent) => {
       if (onSetLocation) {
         onSetLocation(e.latlng.lat, e.latlng.lng);
       }
     });
 
-    // Disable auto-follow when user manually drags
     map.on('dragstart', () => {
       autoFollowRef.current = false;
     });
 
     mapInstanceRef.current = map;
 
-    // Resize Observer for robust tile rendering
     const resizeObserver = new ResizeObserver(() => {
       map.invalidateSize();
     });
@@ -131,7 +126,6 @@ export const MapView: React.FC<MapViewProps> = ({
     };
   }, []);
 
-  // Switch Tile Layer (Satellite, Street, Dark)
   const switchLayer = (newLayer: MapLayerType) => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -147,46 +141,55 @@ export const MapView: React.FC<MapViewProps> = ({
     tileLayerRef.current = newTiles;
   };
 
-  // Custom Heading Marker Icon
-  const createDirectionIcon = (headingDeg: number, currentMode: TrackingMode) => {
+  // Custom Direction Marker with smooth CSS rotation element
+  const createDirectionIcon = (currentMode: TrackingMode) => {
     const isDr = currentMode === 'DEAD_RECKONING';
     const mainColor = isDr ? '#f59e0b' : '#38bdf8';
-    const pulseColor = isDr ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)';
+    const pulseColor = isDr ? 'rgba(245, 158, 11, 0.35)' : 'rgba(56, 189, 248, 0.35)';
 
     return L.divIcon({
       className: 'custom-location-marker',
       html: `
-        <div style="position: relative; width: 52px; height: 52px; transform: translate(-50%, -50%);">
-          <!-- Orientation Cone / Beam -->
-          <div style="
+        <div class="location-marker-wrapper" style="position: relative; width: 52px; height: 52px; transform: translate(-50%, -50%);">
+          <!-- Smooth Rotating Beam & Needle Container -->
+          <div class="location-heading-rotator" style="
             position: absolute;
             top: 50%;
             left: 50%;
             width: 0;
             height: 0;
-            transform-origin: 50% 100%;
-            transform: translate(-50%, -100%) rotate(${headingDeg}deg);
-            border-left: 22px solid transparent;
-            border-right: 22px solid transparent;
-            border-top: 40px solid ${pulseColor};
+            transition: transform 0.12s cubic-bezier(0.2, 0.8, 0.4, 1);
+            transform-origin: 0 0;
             pointer-events: none;
-          "></div>
-          
-          <!-- Direction Needle -->
-          <div style="
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 3.5px;
-            height: 22px;
-            background: ${mainColor};
-            transform-origin: 50% 100%;
-            transform: translate(-50%, -100%) rotate(${headingDeg}deg);
-            border-radius: 2px;
-            box-shadow: 0 0 6px ${mainColor};
-          "></div>
+          ">
+            <!-- Orientation Beam -->
+            <div style="
+              position: absolute;
+              top: 0;
+              left: 0;
+              width: 0;
+              height: 0;
+              transform: translate(-50%, -100%);
+              border-left: 22px solid transparent;
+              border-right: 22px solid transparent;
+              border-top: 42px solid ${pulseColor};
+            "></div>
+            
+            <!-- Direction Needle -->
+            <div style="
+              position: absolute;
+              top: 0;
+              left: 0;
+              width: 3.5px;
+              height: 24px;
+              background: ${mainColor};
+              transform: translate(-50%, -100%);
+              border-radius: 2px;
+              box-shadow: 0 0 8px ${mainColor};
+            "></div>
+          </div>
 
-          <!-- Center Dot with High-Contrast Border -->
+          <!-- Center Stationary Dot -->
           <div style="
             position: absolute;
             top: 50%;
@@ -205,30 +208,41 @@ export const MapView: React.FC<MapViewProps> = ({
     });
   };
 
-  // Update Location Marker & Accuracy Circle & First Fix Centering
+  // Update Location Marker position & Heading without DOM thrashing
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
     const latLng: L.LatLngTuple = [location.latitude, location.longitude];
 
-    // If first fix received, force view center onto actual coordinates
     if (hasReceivedFix && !initialCenteredRef.current) {
       initialCenteredRef.current = true;
       autoFollowRef.current = true;
       map.setView(latLng, 18, { animate: true });
     }
 
-    // Marker update
+    // Marker creation or position update
     if (!markerRef.current) {
       markerRef.current = L.marker(latLng, {
-        icon: createDirectionIcon(heading, mode),
+        icon: createDirectionIcon(mode),
         zIndexOffset: 1000,
       }).addTo(map);
+      prevModeRef.current = mode;
     } else {
       markerRef.current.setLatLng(latLng);
-      markerRef.current.setIcon(createDirectionIcon(heading, mode));
+
+      // Re-create icon ONLY if mode changes (GPS <-> DR)
+      if (prevModeRef.current !== mode) {
+        markerRef.current.setIcon(createDirectionIcon(mode));
+        prevModeRef.current = mode;
+      }
     }
+
+    // Direct Smooth DOM CSS Transform rotation (Rock-solid, zero visual flicker!)
+    const rotators = document.querySelectorAll('.location-heading-rotator');
+    rotators.forEach((el) => {
+      (el as HTMLElement).style.transform = `rotate(${heading}deg)`;
+    });
 
     // Accuracy Circle update
     const accuracy = location.accuracy ?? (mode === 'DEAD_RECKONING' ? 8 : 10);
@@ -251,13 +265,12 @@ export const MapView: React.FC<MapViewProps> = ({
       });
     }
 
-    // Auto-pan if enabled
     if (autoFollowRef.current) {
       map.panTo(latLng, { animate: true, duration: 0.3 });
     }
   }, [location.latitude, location.longitude, heading, mode, location.accuracy, hasReceivedFix]);
 
-  // Update Path Trails (GPS in Blue, DR in Orange)
+  // Update Path Trails
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -273,7 +286,6 @@ export const MapView: React.FC<MapViewProps> = ({
       }
     });
 
-    // Update GPS Polyline
     if (!gpsPolylineRef.current) {
       gpsPolylineRef.current = L.polyline(gpsPoints, {
         color: '#38bdf8',
@@ -285,7 +297,6 @@ export const MapView: React.FC<MapViewProps> = ({
       gpsPolylineRef.current.setLatLngs(gpsPoints);
     }
 
-    // Update DR Polyline
     if (!drPolylineRef.current) {
       drPolylineRef.current = L.polyline(drPoints, {
         color: '#f59e0b',

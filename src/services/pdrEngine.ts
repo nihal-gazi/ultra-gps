@@ -1,6 +1,6 @@
 /**
  * Pedestrian Dead Reckoning (PDR) Engine
- * Integrates Accelerometer, Gyroscope, Compass, Geodesy, ZUPT Anti-Drift, and Forward/Backward Progression
+ * Integrates Accelerometer, Gyroscope, Compass, Geodesy, ZUPT Anti-Drift, and Smooth Orientation
  */
 
 import type {
@@ -15,7 +15,7 @@ import type {
 } from '../types';
 import { calculateDestinationPoint, calculateHaversineDistance } from '../utils/geodesy';
 import { OrientationInvariantGravityFilter, LowPassFilter, StepDetector } from '../utils/filter';
-import { HeadingFusionFilter, computeRotationMatrixHeading, normalizeDegrees } from '../utils/orientation';
+import { SmoothHeadingFilter, computeRobustCompassHeading, normalizeDegrees } from '../utils/orientation';
 
 export interface PDRState {
   mode: TrackingMode;
@@ -84,7 +84,7 @@ export class PDREngine {
   private gravityFilter = new OrientationInvariantGravityFilter();
   private magnitudeLpf = new LowPassFilter(0.25);
   private stepDetector = new StepDetector(0.45, 0.42, 240, 0.18);
-  private headingFusion = new HeadingFusionFilter(0.94);
+  private headingFilter = new SmoothHeadingFilter(0);
 
   // Step timestamps for cadence calculation (sliding window of 10s)
   private stepTimestamps: number[] = [];
@@ -146,7 +146,6 @@ export class PDREngine {
       this.config.minStepIntervalMs,
       this.config.stationaryVarianceThreshold
     );
-    this.headingFusion.setGyroWeight(this.config.gyroWeight);
     this.notify();
   }
 
@@ -184,8 +183,8 @@ export class PDREngine {
     };
 
     if (heading !== null && !isNaN(heading)) {
+      this.headingFilter.reset(heading);
       this.headingData.heading = heading;
-      this.headingFusion.reset(heading);
     }
 
     if (this.mode === 'GPS' || this.mode === 'SEARCHING_GPS') {
@@ -219,31 +218,28 @@ export class PDREngine {
     webkitCompassHeading?: number,
     absolute: boolean = false
   ) {
-    let resolvedHeading = this.headingData.heading;
+    let rawHeading = this.headingData.rawHeading;
     let source: HeadingData['source'] = 'fallback';
 
     if (webkitCompassHeading !== undefined && !isNaN(webkitCompassHeading)) {
-      resolvedHeading = normalizeDegrees(webkitCompassHeading);
+      rawHeading = normalizeDegrees(webkitCompassHeading);
       source = 'webkit';
     } else if (alpha !== null && beta !== null && gamma !== null) {
-      if (absolute) {
-        resolvedHeading = computeRotationMatrixHeading(alpha, beta, gamma);
-        source = 'absolute';
-      } else {
-        resolvedHeading = computeRotationMatrixHeading(alpha, beta, gamma);
-        source = 'rotation-matrix';
-      }
+      rawHeading = computeRobustCompassHeading(alpha, beta, gamma);
+      source = absolute ? 'absolute' : 'rotation-matrix';
     } else if (alpha !== null && !isNaN(alpha)) {
-      resolvedHeading = normalizeDegrees(360 - alpha);
+      rawHeading = normalizeDegrees(360 - alpha);
       source = 'alpha';
     }
 
+    const smoothedHeading = this.headingFilter.filter(rawHeading);
+
     this.headingData = {
-      heading: resolvedHeading,
-      rawHeading: resolvedHeading,
+      heading: Number(smoothedHeading.toFixed(1)),
+      rawHeading: Number(rawHeading.toFixed(1)),
       source,
-      pitch: beta ?? 0,
-      roll: gamma ?? 0,
+      pitch: Number((beta ?? 0).toFixed(1)),
+      roll: Number((gamma ?? 0).toFixed(1)),
       calibrated: true,
     };
 
@@ -254,7 +250,9 @@ export class PDREngine {
     ax: number,
     ay: number,
     az: number,
-    gyroZ: number | null,
+    gx: number = 0,
+    gy: number = 0,
+    gz: number = 0,
     hasGravity: boolean = true,
     timestamp: number = Date.now()
   ) {
@@ -271,15 +269,7 @@ export class PDREngine {
     }
 
     const filteredMag = this.magnitudeLpf.filter(dynamicAcc);
-
-    if (gyroZ !== null && !isNaN(gyroZ)) {
-      const fusedHeading = this.headingFusion.update(
-        this.headingData.rawHeading,
-        gyroZ,
-        timestamp
-      );
-      this.headingData.heading = fusedHeading;
-    }
+    const gyroMag = Math.sqrt(gx * gx + gy * gy + gz * gz);
 
     // Run step detector with ZUPT stationary gating
     const detection = this.stepDetector.processSample(filteredMag, ay, timestamp);
@@ -287,7 +277,6 @@ export class PDREngine {
     this.stepMetrics.isStationary = detection.isStationary;
     this.stepMetrics.motionVariance = Number(detection.variance.toFixed(3));
 
-    // Resolve direction
     let effectiveDirection: WalkDirection = detection.detectedDirection;
     if (this.stepMetrics.directionMode !== 'AUTO') {
       effectiveDirection = this.stepMetrics.directionMode;
@@ -304,6 +293,10 @@ export class PDREngine {
       isPeak: detection.isStep,
       stepLength: detection.stepLength,
       isStationary: detection.isStationary,
+      gx: Number(gx.toFixed(1)),
+      gy: Number(gy.toFixed(1)),
+      gz: Number(gz.toFixed(1)),
+      gyroMagnitude: Number(gyroMag.toFixed(1)),
     };
 
     this.pushMotionSample(sample);
@@ -311,7 +304,6 @@ export class PDREngine {
     if (detection.isStep && !detection.isStationary) {
       this.handleStepDetected(detection.stepLength, effectiveDirection, timestamp);
     } else {
-      // Decay cadence and speed if stationary
       if (detection.isStationary && Date.now() - this.stepMetrics.lastStepTimestamp > 2500) {
         this.stepMetrics.cadence = 0;
         this.stepMetrics.speedMps = 0;
@@ -333,7 +325,6 @@ export class PDREngine {
     this.stepMetrics.isStationary = false;
     this.stepMetrics.walkDirection = direction;
 
-    // Track cadence
     this.stepTimestamps.push(timestamp);
     const tenSecondsAgo = timestamp - 10000;
     this.stepTimestamps = this.stepTimestamps.filter((t) => t >= tenSecondsAgo);
@@ -344,13 +335,11 @@ export class PDREngine {
     this.stepMetrics.speedMps = Number(speedMps.toFixed(2));
     this.stepMetrics.speedKmh = Number((speedMps * 3.6).toFixed(2));
 
-    // Determine bearing: If walking backward, displacement is 180° opposite to phone heading
     const effectiveBearing =
       direction === 'BACKWARD'
         ? normalizeDegrees(this.headingData.heading + 180)
         : this.headingData.heading;
 
-    // If in Dead Reckoning mode OR SEARCHING_GPS mode, advance coordinates
     if (this.mode === 'DEAD_RECKONING' || this.mode === 'SEARCHING_GPS') {
       const { lat: newLat, lng: newLng } = calculateDestinationPoint(
         this.currentLocation.latitude,
@@ -388,18 +377,22 @@ export class PDREngine {
     const simAx = (Math.random() - 0.5) * 0.4;
     const simAy = direction === 'BACKWARD' ? -2.2 : 2.4;
     const simAz = 9.81 + 1.8;
-    this.processDeviceMotion(simAx, simAy, simAz, 0, true, now);
+    const simGx = 12.0;
+    const simGy = 6.5;
+    const simGz = 4.0;
+    this.processDeviceMotion(simAx, simAy, simAz, simGx, simGy, simGz, true, now);
     this.handleStepDetected(stepLength, direction, now);
   }
 
   public setManualHeading(heading: number) {
+    const norm = normalizeDegrees(heading);
+    this.headingFilter.reset(norm);
     this.headingData = {
       ...this.headingData,
-      heading: normalizeDegrees(heading),
-      rawHeading: normalizeDegrees(heading),
+      heading: norm,
+      rawHeading: norm,
       source: 'simulated',
     };
-    this.headingFusion.reset(heading);
     this.notify();
   }
 
