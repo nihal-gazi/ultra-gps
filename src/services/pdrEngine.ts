@@ -1,6 +1,6 @@
 /**
  * Pedestrian Dead Reckoning (PDR) Engine
- * Integrates Accelerometer, Gyroscope, Compass, and Geodesy
+ * Integrates Accelerometer, Gyroscope, Compass, Geodesy, ZUPT Anti-Drift, and Forward/Backward Progression
  */
 
 import type {
@@ -11,6 +11,7 @@ import type {
   StepMetrics,
   TrackingMode,
   CalibrationConfig,
+  WalkDirection,
 } from '../types';
 import { calculateDestinationPoint, calculateHaversineDistance } from '../utils/geodesy';
 import { OrientationInvariantGravityFilter, LowPassFilter, StepDetector } from '../utils/filter';
@@ -59,14 +60,19 @@ export class PDREngine {
     totalDistance: 0,
     speedMps: 0,
     speedKmh: 0,
+    isStationary: true,
+    motionVariance: 0,
+    walkDirection: 'FORWARD',
+    directionMode: 'AUTO',
   };
 
   private config: CalibrationConfig = {
     weinbergK: 0.45,
-    peakThreshold: 0.35, // Sensitive default for realistic human walking
-    minStepIntervalMs: 220,
+    peakThreshold: 0.42,
+    minStepIntervalMs: 240,
     smoothingFactor: 0.25,
     gyroWeight: 0.94,
+    stationaryVarianceThreshold: 0.18,
   };
 
   private recentMotion: MotionSample[] = [];
@@ -77,7 +83,7 @@ export class PDREngine {
   // Filter instances
   private gravityFilter = new OrientationInvariantGravityFilter();
   private magnitudeLpf = new LowPassFilter(0.25);
-  private stepDetector = new StepDetector(0.45, 0.35, 220);
+  private stepDetector = new StepDetector(0.45, 0.42, 240, 0.18);
   private headingFusion = new HeadingFusionFilter(0.94);
 
   // Step timestamps for cadence calculation (sliding window of 10s)
@@ -124,33 +130,36 @@ export class PDREngine {
     this.notify();
   }
 
+  public setDirectionMode(dirMode: 'AUTO' | 'FORWARD' | 'BACKWARD') {
+    this.stepMetrics.directionMode = dirMode;
+    if (dirMode !== 'AUTO') {
+      this.stepMetrics.walkDirection = dirMode;
+    }
+    this.notify();
+  }
+
   public updateCalibration(partialConfig: Partial<CalibrationConfig>) {
     this.config = { ...this.config, ...partialConfig };
     this.stepDetector.updateConfig(
       this.config.weinbergK,
       this.config.peakThreshold,
-      this.config.minStepIntervalMs
+      this.config.minStepIntervalMs,
+      this.config.stationaryVarianceThreshold
     );
     this.headingFusion.setGyroWeight(this.config.gyroWeight);
     this.notify();
   }
 
-  /**
-   * Called when approximate (e.g. IP) location is found before GPS lock
-   */
   public setInitialApproximateLocation(lat: number, lng: number) {
     if (this.hasPreciseGpsFix) return;
 
     this.currentLocation.latitude = lat;
     this.currentLocation.longitude = lng;
     this.hasReceivedFix = true;
-    this.recordPathPoint(lat, lng, Date.now(), 'SEARCHING_GPS', this.headingData.heading, 500);
+    this.recordPathPoint(lat, lng, Date.now(), 'SEARCHING_GPS', this.headingData.heading, 'FORWARD', 500);
     this.notify();
   }
 
-  /**
-   * Called when live GPS fix is received
-   */
   public updateGpsPosition(coords: GeolocationCoordinates, timestamp: number = Date.now()) {
     const prevLat = this.currentLocation.latitude;
     const prevLng = this.currentLocation.longitude;
@@ -182,7 +191,6 @@ export class PDREngine {
     if (this.mode === 'GPS' || this.mode === 'SEARCHING_GPS') {
       this.mode = 'GPS';
 
-      // Distance increment if valid previous position
       if (this.pathHistory.length > 0) {
         const d = calculateHaversineDistance(prevLat, prevLng, lat, lng);
         if (d > 1 && d < 100) {
@@ -196,6 +204,7 @@ export class PDREngine {
         timestamp,
         'GPS',
         this.headingData.heading,
+        'FORWARD',
         accuracy !== null ? accuracy : undefined
       );
     }
@@ -203,9 +212,6 @@ export class PDREngine {
     this.notify();
   }
 
-  /**
-   * Updates device orientation from DeviceOrientationEvent, W3C Sensor, or synthetic sources
-   */
   public updateOrientation(
     alpha: number | null,
     beta: number | null,
@@ -244,9 +250,6 @@ export class PDREngine {
     this.notify();
   }
 
-  /**
-   * Processes raw accelerometer and gyroscope data from DeviceMotionEvent or Generic Sensor API
-   */
   public processDeviceMotion(
     ax: number,
     ay: number,
@@ -267,10 +270,8 @@ export class PDREngine {
       rawMag = dynamicAcc;
     }
 
-    // Apply low-pass smoothing filter to dynamic acceleration
     const filteredMag = this.magnitudeLpf.filter(dynamicAcc);
 
-    // Fuse gyroscope with current heading
     if (gyroZ !== null && !isNaN(gyroZ)) {
       const fusedHeading = this.headingFusion.update(
         this.headingData.rawHeading,
@@ -280,8 +281,18 @@ export class PDREngine {
       this.headingData.heading = fusedHeading;
     }
 
-    // Run step detector
-    const detection = this.stepDetector.processSample(filteredMag, timestamp);
+    // Run step detector with ZUPT stationary gating
+    const detection = this.stepDetector.processSample(filteredMag, ay, timestamp);
+
+    this.stepMetrics.isStationary = detection.isStationary;
+    this.stepMetrics.motionVariance = Number(detection.variance.toFixed(3));
+
+    // Resolve direction
+    let effectiveDirection: WalkDirection = detection.detectedDirection;
+    if (this.stepMetrics.directionMode !== 'AUTO') {
+      effectiveDirection = this.stepMetrics.directionMode;
+    }
+    this.stepMetrics.walkDirection = effectiveDirection;
 
     const sample: MotionSample = {
       timestamp,
@@ -292,46 +303,60 @@ export class PDREngine {
       filteredMagnitude: Number(filteredMag.toFixed(2)),
       isPeak: detection.isStep,
       stepLength: detection.stepLength,
+      isStationary: detection.isStationary,
     };
 
     this.pushMotionSample(sample);
 
-    // If step detected
-    if (detection.isStep) {
-      this.handleStepDetected(detection.stepLength, timestamp);
+    if (detection.isStep && !detection.isStationary) {
+      this.handleStepDetected(detection.stepLength, effectiveDirection, timestamp);
     } else {
+      // Decay cadence and speed if stationary
+      if (detection.isStationary && Date.now() - this.stepMetrics.lastStepTimestamp > 2500) {
+        this.stepMetrics.cadence = 0;
+        this.stepMetrics.speedMps = 0;
+        this.stepMetrics.speedKmh = 0;
+      }
       this.notify();
     }
   }
 
-  /**
-   * Handles a detected step and performs geodetic translation if in DEAD_RECKONING mode
-   */
-  public handleStepDetected(stepLength: number, timestamp: number = Date.now()) {
+  public handleStepDetected(
+    stepLength: number,
+    direction: WalkDirection = 'FORWARD',
+    timestamp: number = Date.now()
+  ) {
     this.stepMetrics.stepCount += 1;
     this.stepMetrics.lastStepTimestamp = timestamp;
     this.stepMetrics.currentStepLength = stepLength;
     this.stepMetrics.totalDistance += stepLength;
+    this.stepMetrics.isStationary = false;
+    this.stepMetrics.walkDirection = direction;
 
-    // Track cadence (steps in past 10 seconds)
+    // Track cadence
     this.stepTimestamps.push(timestamp);
     const tenSecondsAgo = timestamp - 10000;
     this.stepTimestamps = this.stepTimestamps.filter((t) => t >= tenSecondsAgo);
     const cadence = (this.stepTimestamps.length / 10) * 60;
     this.stepMetrics.cadence = Number(cadence.toFixed(1));
 
-    // Calculate speed based on cadence & step length
     const speedMps = (cadence / 60) * stepLength;
     this.stepMetrics.speedMps = Number(speedMps.toFixed(2));
     this.stepMetrics.speedKmh = Number((speedMps * 3.6).toFixed(2));
 
-    // If in Dead Reckoning mode OR SEARCHING_GPS mode, advance the geodetic coordinates
+    // Determine bearing: If walking backward, displacement is 180° opposite to phone heading
+    const effectiveBearing =
+      direction === 'BACKWARD'
+        ? normalizeDegrees(this.headingData.heading + 180)
+        : this.headingData.heading;
+
+    // If in Dead Reckoning mode OR SEARCHING_GPS mode, advance coordinates
     if (this.mode === 'DEAD_RECKONING' || this.mode === 'SEARCHING_GPS') {
       const { lat: newLat, lng: newLng } = calculateDestinationPoint(
         this.currentLocation.latitude,
         this.currentLocation.longitude,
         stepLength,
-        this.headingData.heading
+        effectiveBearing
       );
 
       this.currentLocation = {
@@ -349,6 +374,7 @@ export class PDREngine {
         timestamp,
         'DEAD_RECKONING',
         this.headingData.heading,
+        direction,
         this.currentLocation.accuracy ?? undefined,
         this.stepMetrics.stepCount
       );
@@ -357,16 +383,13 @@ export class PDREngine {
     this.notify();
   }
 
-  /**
-   * Injects a synthetic step for testing in browser environments
-   */
-  public injectSimulatedStep(stepLength: number = 0.72) {
+  public injectSimulatedStep(stepLength: number = 0.72, direction: WalkDirection = 'FORWARD') {
     const now = Date.now();
     const simAx = (Math.random() - 0.5) * 0.4;
-    const simAy = 2.4 + (Math.random() - 0.5) * 0.3;
+    const simAy = direction === 'BACKWARD' ? -2.2 : 2.4;
     const simAz = 9.81 + 1.8;
     this.processDeviceMotion(simAx, simAy, simAz, 0, true, now);
-    this.handleStepDetected(stepLength, now);
+    this.handleStepDetected(stepLength, direction, now);
   }
 
   public setManualHeading(heading: number) {
@@ -387,7 +410,7 @@ export class PDREngine {
       latitude: lat,
       longitude: lng,
     };
-    this.recordPathPoint(lat, lng, Date.now(), this.mode, this.headingData.heading, 5);
+    this.recordPathPoint(lat, lng, Date.now(), this.mode, this.headingData.heading, 'FORWARD', 5);
     this.notify();
   }
 
@@ -400,6 +423,10 @@ export class PDREngine {
       totalDistance: 0,
       speedMps: 0,
       speedKmh: 0,
+      isStationary: true,
+      motionVariance: 0,
+      walkDirection: 'FORWARD',
+      directionMode: this.stepMetrics.directionMode,
     };
     this.stepTimestamps = [];
     this.pathHistory = [];
@@ -422,6 +449,7 @@ export class PDREngine {
     timestamp: number,
     mode: TrackingMode,
     heading: number,
+    direction: WalkDirection = 'FORWARD',
     accuracy?: number,
     stepIndex?: number
   ) {
@@ -431,6 +459,7 @@ export class PDREngine {
       timestamp,
       mode,
       heading,
+      direction,
       accuracy,
       stepIndex,
     });

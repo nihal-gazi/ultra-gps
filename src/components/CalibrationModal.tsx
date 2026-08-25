@@ -11,10 +11,11 @@ interface CalibrationModalProps {
 
 const DEFAULT_CONFIG: CalibrationConfig = {
   weinbergK: 0.45,
-  peakThreshold: 1.1,
-  minStepIntervalMs: 250,
+  peakThreshold: 0.42,
+  minStepIntervalMs: 240,
   smoothingFactor: 0.25,
   gyroWeight: 0.94,
+  stationaryVarianceThreshold: 0.18,
 };
 
 export const CalibrationModal: React.FC<CalibrationModalProps> = ({
@@ -44,7 +45,7 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
           <div className="flex items-center gap-2">
             <Sliders className="w-4 h-4 text-indigo-400" />
             <h2 className="text-sm font-mono font-bold uppercase tracking-wider text-slate-200">
-              Sensor Calibration &amp; Tuning
+              Sensor Calibration &amp; Anti-Drift Tuning
             </h2>
           </div>
           <button
@@ -56,7 +57,34 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
         </div>
 
         {/* Sliders Form */}
-        <div className="flex flex-col gap-4 text-xs font-mono">
+        <div className="flex flex-col gap-4 text-xs font-mono max-h-[65vh] overflow-y-auto pr-1">
+          {/* Stationary ZUPT Gate (Anti-Drift) */}
+          <div className="flex flex-col gap-1.5 bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+            <div className="flex justify-between items-center">
+              <span className="text-slate-300 font-semibold">Anti-Drift Stationary Gate (ZUPT):</span>
+              <span className="text-rose-400 font-bold">
+                {formData.stationaryVarianceThreshold.toFixed(2)}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0.05"
+              max="0.45"
+              step="0.01"
+              value={formData.stationaryVarianceThreshold}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  stationaryVarianceThreshold: parseFloat(e.target.value),
+                })
+              }
+              className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-rose-500"
+            />
+            <div className="text-[10px] text-slate-500">
+              Motion energy below this threshold is locked as Stationary ($v=0$) to eliminate standing drift.
+            </div>
+          </div>
+
           {/* Weinberg K */}
           <div className="flex flex-col gap-1.5 bg-slate-950/60 p-3 rounded-lg border border-slate-800">
             <div className="flex justify-between items-center">
@@ -89,9 +117,9 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
             </div>
             <input
               type="range"
-              min="0.5"
-              max="2.5"
-              step="0.05"
+              min="0.20"
+              max="1.50"
+              step="0.02"
               value={formData.peakThreshold}
               onChange={(e) =>
                 setFormData({ ...formData, peakThreshold: parseFloat(e.target.value) })
@@ -99,7 +127,7 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
               className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
             />
             <div className="text-[10px] text-slate-500">
-              Minimum acceleration spike required to trigger step count.
+              Minimum dynamic acceleration spike required to trigger step count.
             </div>
           </div>
 

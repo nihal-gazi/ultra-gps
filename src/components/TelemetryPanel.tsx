@@ -9,6 +9,9 @@ import {
   ShieldAlert,
   Navigation,
   Cpu,
+  ArrowUp,
+  ArrowDown,
+  Pause,
 } from 'lucide-react';
 
 interface TelemetryPanelProps {
@@ -21,6 +24,7 @@ interface TelemetryPanelProps {
   onToggleGps: () => void;
   onRequestPermissions: () => void;
   onLocateNow?: () => void;
+  onSetDirectionMode?: (mode: 'AUTO' | 'FORWARD' | 'BACKWARD') => void;
 }
 
 function getCardinalDirection(deg: number): string {
@@ -39,9 +43,17 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
   onToggleGps,
   onRequestPermissions,
   onLocateNow,
+  onSetDirectionMode,
 }) => {
   const isDr = mode === 'DEAD_RECKONING';
   const cardinal = getCardinalDirection(headingData.heading);
+
+  const cycleDirectionMode = () => {
+    if (!onSetDirectionMode) return;
+    if (stepMetrics.directionMode === 'AUTO') onSetDirectionMode('FORWARD');
+    else if (stepMetrics.directionMode === 'FORWARD') onSetDirectionMode('BACKWARD');
+    else onSetDirectionMode('AUTO');
+  };
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-slate-900 border border-slate-800 rounded-xl text-slate-100 font-sans shadow-xl">
@@ -66,11 +78,30 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
             {isDr ? 'IMU DEAD RECKONING' : mode === 'GPS' ? 'GPS ACTIVE' : 'ACQUIRING POSITION'}
           </div>
 
-          {sensorStatus.isSimulating && (
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-purple-500/20 text-purple-300 border border-purple-500/30">
-              SIMULATOR ACTIVE
-            </span>
-          )}
+          {/* Motion State Pill (ZUPT) */}
+          <div
+            className={`flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase border ${
+              stepMetrics.isStationary
+                ? 'bg-slate-800 text-slate-400 border-slate-700'
+                : 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40'
+            }`}
+          >
+            {stepMetrics.isStationary ? (
+              <>
+                <Pause className="w-2.5 h-2.5" />
+                <span>STATIONARY (ZUPT)</span>
+              </>
+            ) : (
+              <>
+                {stepMetrics.walkDirection === 'BACKWARD' ? (
+                  <ArrowDown className="w-2.5 h-2.5 text-rose-400" />
+                ) : (
+                  <ArrowUp className="w-2.5 h-2.5 text-emerald-400" />
+                )}
+                <span>{stepMetrics.walkDirection}</span>
+              </>
+            )}
+          </div>
         </div>
 
         {/* GPS Controls & Fallback Switch */}
@@ -111,19 +142,30 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
         </div>
       </div>
 
-      {/* Sensor Health Diagnostic Line */}
+      {/* Sensor Health Diagnostic Line with Direction Mode Switch */}
       <div className="flex items-center justify-between px-2.5 py-1.5 bg-slate-950/80 border border-slate-800/80 rounded-lg text-[11px] font-mono">
         <div className="flex items-center gap-1.5 text-slate-400 truncate">
           <Radio className="w-3 h-3 text-sky-400 shrink-0" />
           <span className="truncate">{sensorStatus.gpsStatusText}</span>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Cpu className="w-3 h-3 text-indigo-400" />
-          {sensorStatus.hasHardwareMotion ? (
-            <span className="text-emerald-400">HARDWARE IMU LIVE</span>
-          ) : (
-            <span className="text-slate-400">DESKTOP / KEYS READY</span>
-          )}
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={cycleDirectionMode}
+            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[10px] flex items-center gap-1"
+            title="Switch Stride Direction (AUTO / FORWARD / BACKWARD)"
+          >
+            <span>GEAR: {stepMetrics.directionMode}</span>
+          </button>
+
+          <div className="flex items-center gap-1 text-slate-400">
+            <Cpu className="w-3 h-3 text-indigo-400" />
+            {sensorStatus.hasHardwareMotion ? (
+              <span className="text-emerald-400">IMU LIVE</span>
+            ) : (
+              <span className="text-slate-400">KEYS READY</span>
+            )}
+          </div>
         </div>
       </div>
 

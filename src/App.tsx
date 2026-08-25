@@ -18,6 +18,7 @@ export const App: React.FC = () => {
     toggleWalkingSimulator,
     setManualHeading,
     setManualLocation,
+    setDirectionMode,
     resetTracking,
     updateCalibration,
     requestSensorPermissions,
@@ -66,6 +67,7 @@ export const App: React.FC = () => {
             onToggleGps={toggleGps}
             onRequestPermissions={requestSensorPermissions}
             onLocateNow={acquireCurrentLocation}
+            onSetDirectionMode={setDirectionMode}
           />
 
           {/* Real-time Sensor Accelerometer Waveform */}
@@ -83,9 +85,11 @@ export const App: React.FC = () => {
           <SimulatorControls
             isSimulating={sensorStatus.isSimulating}
             currentHeading={state.headingData.heading}
+            directionMode={state.stepMetrics.directionMode}
             onInjectStep={injectStep}
             onToggleSimulator={toggleWalkingSimulator}
             onSetHeading={setManualHeading}
+            onSetDirectionMode={setDirectionMode}
             onResetTracking={resetTracking}
             onOpenCalibration={() => setIsCalibrationOpen(true)}
           />

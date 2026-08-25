@@ -1,4 +1,5 @@
 export type TrackingMode = 'GPS' | 'DEAD_RECKONING' | 'SEARCHING_GPS' | 'CALIBRATING';
+export type WalkDirection = 'FORWARD' | 'BACKWARD';
 
 export interface Coordinates {
   latitude: number;
@@ -27,6 +28,7 @@ export interface MotionSample {
   filteredMagnitude: number;
   isPeak: boolean;
   stepLength: number;
+  isStationary: boolean;
 }
 
 export interface StepMetrics {
@@ -37,6 +39,10 @@ export interface StepMetrics {
   totalDistance: number; // in meters
   speedMps: number; // meters per second
   speedKmh: number; // km/h
+  isStationary: boolean;
+  motionVariance: number;
+  walkDirection: WalkDirection;
+  directionMode: 'AUTO' | 'FORWARD' | 'BACKWARD';
 }
 
 export interface PathPoint {
@@ -45,6 +51,7 @@ export interface PathPoint {
   timestamp: number;
   mode: TrackingMode;
   heading: number;
+  direction?: WalkDirection;
   accuracy?: number;
   stepIndex?: number;
 }
@@ -55,6 +62,7 @@ export interface CalibrationConfig {
   minStepIntervalMs: number; // Minimum ms between consecutive steps (e.g. 250ms -> max 4 steps/sec)
   smoothingFactor: number; // Low pass filter factor alpha (0 - 1)
   gyroWeight: number; // Gyroscope fusion weight in complementary filter (0.90 - 0.98)
+  stationaryVarianceThreshold: number; // Minimum variance below which device is stationary (ZUPT)
 }
 
 export interface SensorStatus {

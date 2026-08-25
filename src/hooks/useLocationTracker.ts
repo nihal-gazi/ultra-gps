@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { pdrEngine } from '../services/pdrEngine';
 import type { PDRState } from '../services/pdrEngine';
-import type { SensorStatus, TrackingMode, CalibrationConfig } from '../types';
+import type { SensorStatus, TrackingMode, CalibrationConfig, WalkDirection } from '../types';
 
 export function useLocationTracker() {
   const [pdrState, setPdrState] = useState<PDRState>(() => pdrEngine.getState());
@@ -89,7 +89,7 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Hardware IMU Sensor Listeners (DeviceMotion & DeviceOrientation)
+  // Hardware IMU Sensor Listeners
   useEffect(() => {
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
       const accel = event.acceleration || event.accelerationIncludingGravity;
@@ -99,7 +99,6 @@ export function useLocationTracker() {
       const ay = accel.y ?? 0;
       const az = accel.z ?? 0;
 
-      // Skip if all values are null
       if (accel.x === null && accel.y === null && accel.z === null) {
         return;
       }
@@ -142,37 +141,10 @@ export function useLocationTracker() {
       passive: true,
     });
 
-    // Also attempt W3C Generic Sensor API if available in Chromium
-    let genericSensors: any[] = [];
-    try {
-      if ('LinearAccelerationSensor' in window) {
-        const sensor = new (window as any).LinearAccelerationSensor({ frequency: 50 });
-        sensor.addEventListener('reading', () => {
-          motionCountRef.current += 1;
-          setSensorStatus((prev) => ({
-            ...prev,
-            accelAvailable: true,
-            hasHardwareMotion: true,
-            motionEventCount: motionCountRef.current,
-          }));
-          pdrEngine.processDeviceMotion(sensor.x ?? 0, sensor.y ?? 0, sensor.z ?? 0, null, false, Date.now());
-        });
-        sensor.start();
-        genericSensors.push(sensor);
-      }
-    } catch (err) {
-      // Generic sensors not allowed or not supported
-    }
-
     return () => {
       window.removeEventListener('devicemotion', handleDeviceMotion);
       window.removeEventListener('deviceorientation', handleDeviceOrientation);
       window.removeEventListener('deviceorientationabsolute', handleDeviceOrientation as EventListener);
-      genericSensors.forEach((s) => {
-        try {
-          s.stop();
-        } catch {}
-      });
     };
   }, []);
 
@@ -235,7 +207,6 @@ export function useLocationTracker() {
       gpsStatusText: 'Requesting GPS coordinates...',
     }));
 
-    // Step 1: Try High Accuracy GPS first
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         pdrEngine.updateGpsPosition(pos.coords, pos.timestamp);
@@ -248,8 +219,6 @@ export function useLocationTracker() {
       },
       (highAccError) => {
         console.warn('High-accuracy GPS failed, trying standard:', highAccError.message);
-        
-        // Step 2: Retry with standard (low) accuracy (Wi-Fi/Cell towers)
         navigator.geolocation.getCurrentPosition(
           (pos) => {
             pdrEngine.updateGpsPosition(pos.coords, pos.timestamp);
@@ -303,10 +272,8 @@ export function useLocationTracker() {
       return;
     }
 
-    // Immediately acquire location
     acquireCurrentLocation();
 
-    // Start background watchPosition
     try {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
@@ -344,7 +311,7 @@ export function useLocationTracker() {
     };
   }, [gpsEnabled, acquireCurrentLocation]);
 
-  // Global Keyboard Controls for Instant Testing (Desktop/Laptop)
+  // Global Keyboard Controls (W/↑ Step Forward, S/↓ Step Backward)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -353,13 +320,10 @@ export function useLocationTracker() {
 
       if (e.code === 'KeyW' || e.code === 'ArrowUp') {
         e.preventDefault();
-        pdrEngine.injectSimulatedStep(0.75);
+        pdrEngine.injectSimulatedStep(0.75, 'FORWARD');
       } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
         e.preventDefault();
-        const current = pdrEngine.getState().headingData.heading;
-        pdrEngine.setManualHeading((current + 180) % 360);
-        pdrEngine.injectSimulatedStep(0.75);
-        pdrEngine.setManualHeading(current);
+        pdrEngine.injectSimulatedStep(0.75, 'BACKWARD');
       } else if (e.code === 'KeyA' || e.code === 'ArrowLeft') {
         e.preventDefault();
         const current = pdrEngine.getState().headingData.heading;
@@ -378,12 +342,10 @@ export function useLocationTracker() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Toggle GPS on/off
   const toggleGps = useCallback(() => {
     setGpsEnabled((prev) => !prev);
   }, []);
 
-  // Set Mode Manually
   const setMode = useCallback((mode: TrackingMode) => {
     pdrEngine.setMode(mode);
     if (mode === 'DEAD_RECKONING') {
@@ -393,9 +355,12 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Step Injection
-  const injectStep = useCallback((stepLength: number = 0.72) => {
-    pdrEngine.injectSimulatedStep(stepLength);
+  const setDirectionMode = useCallback((dirMode: 'AUTO' | 'FORWARD' | 'BACKWARD') => {
+    pdrEngine.setDirectionMode(dirMode);
+  }, []);
+
+  const injectStep = useCallback((stepLength: number = 0.72, direction: WalkDirection = 'FORWARD') => {
+    pdrEngine.injectSimulatedStep(stepLength, direction);
   }, []);
 
   // Continuous Walking Simulator
@@ -422,7 +387,6 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Cleanup simulator on unmount
   useEffect(() => {
     return () => {
       if (simIntervalRef.current !== null) {
@@ -454,6 +418,7 @@ export function useLocationTracker() {
     sensorStatus,
     toggleGps,
     setMode,
+    setDirectionMode,
     injectStep,
     toggleWalkingSimulator,
     setManualHeading,
