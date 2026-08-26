@@ -1,6 +1,7 @@
 /**
  * Edge AI Inertial Odometry Engine.
  * Executes on-device Transformer neural network inference via ONNX Runtime Web with WebGPU acceleration.
+ * Loads self-contained Uint8Array binary buffers to eliminate any external file dependencies.
  */
 
 import * as ort from 'onnxruntime-web';
@@ -27,7 +28,7 @@ export class AIInertialEngine {
   private seqLen: number = 20;
   private inFeatures: number = 6;
   
-  // Rolling IMU buffer: [ax, ay, az, gx_rad, gy_rad, gz_rad]
+  // Rolling IMU buffer: [ax, ay, az, gz_rad, gx_rad, gy_rad]
   private imuBuffer: number[][] = [];
   private lastInferenceTime: number = 0;
   private inferenceIntervalMs: number = 200; // 5Hz inference rate for smooth real-time tracking
@@ -49,9 +50,11 @@ export class AIInertialEngine {
   private listeners: Set<AIStateListener> = new Set();
 
   constructor() {
-    // Configure ONNX Runtime Web WASM paths
-    ort.env.wasm.numThreads = 2;
-    ort.env.wasm.simd = true;
+    // Configure ONNX Runtime Web WASM options
+    try {
+      ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
+      ort.env.wasm.simd = true;
+    } catch {}
   }
 
   public subscribe(listener: AIStateListener): () => void {
@@ -72,7 +75,8 @@ export class AIInertialEngine {
   }
 
   /**
-   * Initializes ONNX Runtime Web session with WebGPU and WASM fallback
+   * Fetches the self-contained ONNX model as an ArrayBuffer and creates an ONNX Runtime session
+   * using WebGPU with WASM fallback.
    */
   public async initializeModel(modelUrl: string = '/models/inertial_transformer.onnx'): Promise<boolean> {
     if (this.session) return true;
@@ -83,27 +87,35 @@ export class AIInertialEngine {
     this.notify();
 
     try {
-      console.log(`[AI Engine] Attempting WebGPU execution provider for ${modelUrl}...`);
-      
+      console.log(`[AI Engine] Fetching monolithic ONNX model buffer from ${modelUrl}...`);
+      const response = await fetch(modelUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} fetching model: ${response.statusText}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const modelBytes = new Uint8Array(arrayBuffer);
+      console.log(`[AI Engine] Downloaded model buffer (${(modelBytes.byteLength / 1024).toFixed(1)} KB). Initializing session...`);
+
       let session: ort.InferenceSession | null = null;
       let usedProvider: 'webgpu' | 'wasm' = 'webgpu';
 
-      // 1. Try WebGPU first
+      // 1. Attempt WebGPU Execution Provider
       try {
         if ('gpu' in navigator) {
-          session = await ort.InferenceSession.create(modelUrl, {
+          session = await ort.InferenceSession.create(modelBytes, {
             executionProviders: ['webgpu'],
             graphOptimizationLevel: 'all',
           });
           usedProvider = 'webgpu';
           console.log('[AI Engine] Successfully initialized with WebGPU execution provider.');
         } else {
-          throw new Error('WebGPU is not supported on this browser context.');
+          throw new Error('WebGPU not supported on this browser context.');
         }
       } catch (webGpuErr) {
-        console.warn('[AI Engine] WebGPU initialization notice (falling back to WASM SIMD):', webGpuErr);
-        // 2. Fallback to WASM
-        session = await ort.InferenceSession.create(modelUrl, {
+        console.warn('[AI Engine] WebGPU initialization notice (switching to WASM SIMD):', webGpuErr);
+        // 2. Fallback to WASM SIMD
+        session = await ort.InferenceSession.create(modelBytes, {
           executionProviders: ['wasm'],
           graphOptimizationLevel: 'all',
         });
@@ -115,6 +127,7 @@ export class AIInertialEngine {
       this.metrics.isLoaded = true;
       this.metrics.isLoading = false;
       this.metrics.executionProvider = usedProvider;
+      this.metrics.errorMessage = undefined;
       this.isInitializing = false;
       this.notify();
       return true;
@@ -123,7 +136,7 @@ export class AIInertialEngine {
       this.metrics.isLoaded = false;
       this.metrics.isLoading = false;
       this.metrics.executionProvider = 'failed';
-      this.metrics.errorMessage = err?.message || 'Model load failed';
+      this.metrics.errorMessage = err?.message || 'Model initialization failed';
       this.isInitializing = false;
       this.notify();
       return false;
@@ -154,7 +167,6 @@ export class AIInertialEngine {
       this.imuBuffer.shift();
     }
 
-    // Check if model is ready and inference window is ready
     if (!this.session || this.imuBuffer.length < this.seqLen) {
       return { newLat: currentLat, newLng: currentLng, displacementMeters: 0, speedMps: 0, isAiUpdated: false };
     }
