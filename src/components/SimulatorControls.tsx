@@ -1,40 +1,30 @@
 import React from 'react';
-import type { WalkDirection } from '../types';
 import {
   RotateCw,
   RotateCcw,
-  Footprints,
   Play,
   Square,
   Trash2,
-  Sliders,
   Compass,
-  ArrowUp,
-  ArrowDown,
+  Activity,
 } from 'lucide-react';
 
 interface SimulatorControlsProps {
   isSimulating: boolean;
   currentHeading: number;
-  directionMode: 'AUTO' | 'FORWARD' | 'BACKWARD';
-  onInjectStep: (stepLength?: number, direction?: WalkDirection) => void;
+  onInjectSample: (ax?: number, ay?: number, az?: number) => void;
   onToggleSimulator: () => void;
   onSetHeading: (heading: number) => void;
-  onSetDirectionMode: (mode: 'AUTO' | 'FORWARD' | 'BACKWARD') => void;
   onResetTracking: () => void;
-  onOpenCalibration: () => void;
 }
 
 export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
   isSimulating,
   currentHeading,
-  directionMode,
-  onInjectStep,
+  onInjectSample,
   onToggleSimulator,
   onSetHeading,
-  onSetDirectionMode,
   onResetTracking,
-  onOpenCalibration,
 }) => {
   const handleTurn = (delta: number) => {
     const newHeading = (currentHeading + delta + 360) % 360;
@@ -43,38 +33,21 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
 
   return (
     <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col gap-3">
-      {/* Title bar with Direction Gear & Calibrate */}
+      {/* Header */}
       <div className="flex items-center justify-between text-xs font-mono text-slate-400">
-        <span className="uppercase font-semibold text-slate-300">PDR Movement Controls</span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onOpenCalibration}
-            className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>CALIBRATE</span>
-          </button>
-        </div>
+        <span className="uppercase font-semibold text-slate-300">Inertial Sensor Simulator</span>
+        <span className="text-[10px] text-slate-500">Pipeline: Record &rarr; Smooth &rarr; ONNX &rarr; Plot</span>
       </div>
 
-      {/* Step & Walk Action Buttons */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      {/* Action Buttons */}
+      <div className="grid grid-cols-3 gap-2">
         <button
-          onClick={() => onInjectStep(0.75, 'FORWARD')}
-          className="px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-mono font-medium flex items-center justify-center gap-1.5 transition-colors shadow-sm"
-          title="Take 1 Step Forward along Heading (Key: W or Up Arrow)"
+          onClick={() => onInjectSample(0.6, 2.2, 9.81)}
+          className="px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 rounded-lg text-xs font-mono font-medium flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+          title="Stream Single IMU Step Sample into Gaussian + ONNX (Key: W or Up Arrow)"
         >
-          <ArrowUp className="w-3.5 h-3.5" />
-          <span>+1 STEP FWD</span>
-        </button>
-
-        <button
-          onClick={() => onInjectStep(0.75, 'BACKWARD')}
-          className="px-3 py-2 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 rounded-lg text-xs font-mono font-medium flex items-center justify-center gap-1.5 transition-colors shadow-sm"
-          title="Take 1 Step Backward opposite to Heading (Key: S or Down Arrow)"
-        >
-          <ArrowDown className="w-3.5 h-3.5" />
-          <span>+1 STEP REV</span>
+          <Activity className="w-3.5 h-3.5" />
+          <span>INJECT STEP</span>
         </button>
 
         <button
@@ -84,17 +57,17 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
               ? 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40'
               : 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
           }`}
-          title="Toggle Continuous Walking Simulator (Key: Space)"
+          title="Toggle Continuous IMU Motion Simulator (Key: Space)"
         >
           {isSimulating ? (
             <>
               <Square className="w-3.5 h-3.5 fill-current" />
-              <span>STOP WALK</span>
+              <span>STOP STREAM</span>
             </>
           ) : (
             <>
               <Play className="w-3.5 h-3.5 fill-current" />
-              <span>AUTO WALK</span>
+              <span>AUTO STREAM</span>
             </>
           )}
         </button>
@@ -102,50 +75,11 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
         <button
           onClick={onResetTracking}
           className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 border border-slate-700 rounded-lg text-xs font-mono flex items-center justify-center gap-1.5 transition-colors"
+          title="Clear Trajectory Path &amp; Counters"
         >
           <Trash2 className="w-3.5 h-3.5" />
           <span>RESET PATH</span>
         </button>
-      </div>
-
-      {/* Direction Progression Selector */}
-      <div className="flex items-center justify-between px-2.5 py-1.5 bg-slate-950/80 rounded-lg border border-slate-800/80 text-[11px] font-mono">
-        <div className="flex items-center gap-1.5 text-slate-400">
-          <Footprints className="w-3.5 h-3.5 text-amber-400" />
-          <span>STRIDE GEAR:</span>
-        </div>
-        <div className="flex gap-1">
-          <button
-            onClick={() => onSetDirectionMode('AUTO')}
-            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
-              directionMode === 'AUTO'
-                ? 'bg-sky-600/30 border-sky-500 text-sky-300'
-                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            AUTO DETECT
-          </button>
-          <button
-            onClick={() => onSetDirectionMode('FORWARD')}
-            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
-              directionMode === 'FORWARD'
-                ? 'bg-emerald-600/30 border-emerald-500 text-emerald-300'
-                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            FORWARD
-          </button>
-          <button
-            onClick={() => onSetDirectionMode('BACKWARD')}
-            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
-              directionMode === 'BACKWARD'
-                ? 'bg-rose-600/30 border-rose-500 text-rose-300'
-                : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            REVERSE (180°)
-          </button>
-        </div>
       </div>
 
       {/* Turn & Heading Controls */}
@@ -153,7 +87,7 @@ export const SimulatorControls: React.FC<SimulatorControlsProps> = ({
         <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
           <div className="flex items-center gap-1">
             <Compass className="w-3 h-3 text-indigo-400" />
-            <span>HEADING BEARING:</span>
+            <span>BEARING ORIENTATION:</span>
           </div>
           <div className="flex items-center gap-2">
             <button

@@ -31,7 +31,6 @@ export const MapView: React.FC<MapViewProps> = ({
   const markerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const gpsPolylineRef = useRef<L.Polyline | null>(null);
-  const drPolylineRef = useRef<L.Polyline | null>(null);
   const aiPolylineRef = useRef<L.Polyline | null>(null);
   const autoFollowRef = useRef<boolean>(true);
   const initialCenteredRef = useRef<boolean>(false);
@@ -142,16 +141,11 @@ export const MapView: React.FC<MapViewProps> = ({
     tileLayerRef.current = newTiles;
   };
 
-  // Custom Direction Marker with smooth CSS rotation element
+  // Direction Marker with smooth CSS rotation
   const createDirectionIcon = (currentMode: TrackingMode) => {
     const isAi = currentMode === 'AI_TRANSFORMER';
-    const isDr = currentMode === 'DEAD_RECKONING';
-    const mainColor = isAi ? '#818cf8' : isDr ? '#f59e0b' : '#38bdf8';
-    const pulseColor = isAi
-      ? 'rgba(129, 140, 248, 0.45)'
-      : isDr
-      ? 'rgba(245, 158, 11, 0.35)'
-      : 'rgba(56, 189, 248, 0.35)';
+    const mainColor = isAi ? '#818cf8' : '#38bdf8';
+    const pulseColor = isAi ? 'rgba(129, 140, 248, 0.45)' : 'rgba(56, 189, 248, 0.35)';
 
     return L.divIcon({
       className: 'custom-location-marker',
@@ -195,7 +189,7 @@ export const MapView: React.FC<MapViewProps> = ({
             "></div>
           </div>
 
-          <!-- Center Stationary Dot -->
+          <!-- Center Dot -->
           <div style="
             position: absolute;
             top: 50%;
@@ -227,7 +221,6 @@ export const MapView: React.FC<MapViewProps> = ({
       map.setView(latLng, 18, { animate: true });
     }
 
-    // Marker creation or position update
     if (!markerRef.current) {
       markerRef.current = L.marker(latLng, {
         icon: createDirectionIcon(mode),
@@ -236,25 +229,20 @@ export const MapView: React.FC<MapViewProps> = ({
       prevModeRef.current = mode;
     } else {
       markerRef.current.setLatLng(latLng);
-
-      // Re-create icon ONLY if mode changes
       if (prevModeRef.current !== mode) {
         markerRef.current.setIcon(createDirectionIcon(mode));
         prevModeRef.current = mode;
       }
     }
 
-    // Direct Smooth DOM CSS Transform rotation
     const rotators = document.querySelectorAll('.location-heading-rotator');
     rotators.forEach((el) => {
       (el as HTMLElement).style.transform = `rotate(${heading}deg)`;
     });
 
-    // Accuracy Circle update
     const isAi = mode === 'AI_TRANSFORMER';
-    const isDr = mode === 'DEAD_RECKONING';
-    const accuracy = location.accuracy ?? (isAi ? 6 : isDr ? 8 : 10);
-    const circleColor = isAi ? '#818cf8' : isDr ? '#f59e0b' : '#38bdf8';
+    const accuracy = location.accuracy ?? (isAi ? 6 : 10);
+    const circleColor = isAi ? '#818cf8' : '#38bdf8';
 
     if (!accuracyCircleRef.current) {
       accuracyCircleRef.current = L.circle(latLng, {
@@ -278,22 +266,19 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   }, [location.latitude, location.longitude, heading, mode, location.accuracy, hasReceivedFix]);
 
-  // Update Path Trails (GPS vs AI Transformer vs Kinematic DR)
+  // Step 5: Plot ONNX trajectory vs GPS path
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
     const gpsPoints: L.LatLngTuple[] = [];
     const aiPoints: L.LatLngTuple[] = [];
-    const drPoints: L.LatLngTuple[] = [];
 
     path.forEach((pt) => {
       if (pt.mode === 'GPS') {
         gpsPoints.push([pt.lat, pt.lng]);
-      } else if (pt.mode === 'AI_TRANSFORMER') {
-        aiPoints.push([pt.lat, pt.lng]);
       } else {
-        drPoints.push([pt.lat, pt.lng]);
+        aiPoints.push([pt.lat, pt.lng]);
       }
     });
 
@@ -309,7 +294,7 @@ export const MapView: React.FC<MapViewProps> = ({
       gpsPolylineRef.current.setLatLngs(gpsPoints);
     }
 
-    // AI Transformer Polyline (Vibrant Indigo)
+    // Step 5: AI Transformer ONNX Polyline (Vibrant Indigo)
     if (!aiPolylineRef.current) {
       aiPolylineRef.current = L.polyline(aiPoints, {
         color: '#818cf8',
@@ -320,19 +305,6 @@ export const MapView: React.FC<MapViewProps> = ({
       }).addTo(map);
     } else {
       aiPolylineRef.current.setLatLngs(aiPoints);
-    }
-
-    // Kinematic DR Polyline (Amber)
-    if (!drPolylineRef.current) {
-      drPolylineRef.current = L.polyline(drPoints, {
-        color: '#f59e0b',
-        weight: 4.0,
-        opacity: 0.9,
-        dashArray: '4, 8',
-        smoothFactor: 1,
-      }).addTo(map);
-    } else {
-      drPolylineRef.current.setLatLngs(drPoints);
     }
   }, [path]);
 
@@ -463,12 +435,8 @@ export const MapView: React.FC<MapViewProps> = ({
           <span className="w-3 h-1 bg-indigo-400 rounded-full inline-block border-b border-dashed border-indigo-200"></span>
           <span className="flex items-center gap-1">
             <Cpu className="w-3 h-3 text-indigo-400" />
-            <span>AI Transformer Track</span>
+            <span>AI Transformer Trajectory (Plotted Output)</span>
           </span>
-        </div>
-        <div className="flex items-center gap-1.5 text-amber-400">
-          <span className="w-3 h-1 bg-amber-500 rounded-full inline-block border-b border-dashed border-amber-300"></span>
-          <span>Kinematic DR</span>
         </div>
         <div className="hidden md:flex items-center gap-1 text-slate-500">
           <MapPin className="w-3.5 h-3.5 text-slate-400" />

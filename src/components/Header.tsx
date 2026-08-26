@@ -1,8 +1,7 @@
 import React from 'react';
-import { Compass, Cpu, Sliders, ShieldCheck, Navigation } from 'lucide-react';
+import { Compass, Cpu, ShieldCheck, Navigation } from 'lucide-react';
 
 interface HeaderProps {
-  onOpenCalibration: () => void;
   onOpenArchitecture: () => void;
   onRequestPermissions: () => void;
   onLocateNow?: () => void;
@@ -11,7 +10,6 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  onOpenCalibration,
   onOpenArchitecture,
   onRequestPermissions,
   onLocateNow,
@@ -32,11 +30,11 @@ export const Header: React.FC<HeaderProps> = ({
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                 : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
             }`}>
-              {isAiLoaded ? 'IO-VNBD WebGPU AI' : 'Transformer Initializing...'}
+              {isAiLoaded ? 'IO-VNBD WebGPU AI' : 'Compiling Shaders...'}
             </span>
           </h1>
           <p className="text-xs text-slate-400 font-mono m-0">
-            Edge WebGPU Inertial Odometry &amp; Deep Satellite View
+            Gaussian Filtered 6-DOF &bull; ONNX Transformer &bull; Edge Neural Odometry
           </p>
         </div>
       </div>
@@ -60,15 +58,6 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Cpu className="w-3.5 h-3.5 text-indigo-400" />
           <span>AI ARCHITECTURE</span>
-        </button>
-
-        <button
-          onClick={onOpenCalibration}
-          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors"
-          title="Configure Weinberg &amp; Filter Constants"
-        >
-          <Sliders className="w-3.5 h-3.5 text-amber-400" />
-          <span>CALIBRATE</span>
         </button>
 
         <button

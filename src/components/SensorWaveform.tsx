@@ -91,23 +91,6 @@ export const SensorWaveform: React.FC<SensorWaveformProps> = ({
       }
     });
     ctx.stroke();
-
-    // Step Peak Points
-    recentMotion.forEach((sample, i) => {
-      if (sample.isPeak) {
-        const x = i * stepX;
-        const y = getY(sample.filteredMagnitude);
-
-        ctx.fillStyle = '#22c55e';
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-    });
   }, [recentMotion, peakThreshold, viewMode]);
 
   // Draw Gyroscope 3-Axis Angular Velocity Waveform

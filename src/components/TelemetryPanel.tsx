@@ -1,5 +1,5 @@
 import React from 'react';
-import type { Coordinates, HeadingData, StepMetrics, TrackingMode, SensorStatus, AIInferenceMetrics } from '../types';
+import type { Coordinates, HeadingData, NavigationMetrics, TrackingMode, SensorStatus, AIInferenceMetrics } from '../types';
 import {
   Compass,
   Gauge,
@@ -8,24 +8,21 @@ import {
   ShieldAlert,
   Navigation,
   Cpu,
-  ArrowUp,
-  ArrowDown,
-  Pause,
   Zap,
+  Activity,
 } from 'lucide-react';
 
 interface TelemetryPanelProps {
   mode: TrackingMode;
   location: Coordinates;
   headingData: HeadingData;
-  stepMetrics: StepMetrics;
+  navigationMetrics: NavigationMetrics;
   sensorStatus: SensorStatus;
   aiMetrics?: AIInferenceMetrics;
   gpsEnabled: boolean;
   onToggleGps: () => void;
   onRequestPermissions: () => void;
   onLocateNow?: () => void;
-  onSetDirectionMode?: (mode: 'AUTO' | 'FORWARD' | 'BACKWARD') => void;
 }
 
 function getCardinalDirection(deg: number): string {
@@ -38,24 +35,16 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
   mode,
   location,
   headingData,
-  stepMetrics,
+  navigationMetrics,
   sensorStatus,
   aiMetrics,
   gpsEnabled,
   onToggleGps,
   onRequestPermissions,
   onLocateNow,
-  onSetDirectionMode,
 }) => {
-  const isDr = mode === 'DEAD_RECKONING' || mode === 'AI_TRANSFORMER';
+  const isAi = mode === 'AI_TRANSFORMER';
   const cardinal = getCardinalDirection(headingData.heading);
-
-  const cycleDirectionMode = () => {
-    if (!onSetDirectionMode) return;
-    if (stepMetrics.directionMode === 'AUTO') onSetDirectionMode('FORWARD');
-    else if (stepMetrics.directionMode === 'FORWARD') onSetDirectionMode('BACKWARD');
-    else onSetDirectionMode('AUTO');
-  };
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-slate-900 border border-slate-800 rounded-xl text-slate-100 font-sans shadow-xl">
@@ -65,10 +54,8 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           {/* Mode Pill */}
           <div
             className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-semibold tracking-wide uppercase ${
-              mode === 'AI_TRANSFORMER'
+              isAi
                 ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40'
-                : isDr
-                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
                 : mode === 'GPS'
                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
                 : 'bg-sky-500/20 text-sky-400 border border-sky-500/40'
@@ -76,51 +63,24 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           >
             <span
               className={`w-2 h-2 rounded-full animate-pulse ${
-                mode === 'AI_TRANSFORMER'
-                  ? 'bg-indigo-400'
-                  : isDr
-                  ? 'bg-amber-400'
-                  : mode === 'GPS'
-                  ? 'bg-emerald-400'
-                  : 'bg-sky-400'
+                isAi ? 'bg-indigo-400' : mode === 'GPS' ? 'bg-emerald-400' : 'bg-sky-400'
               }`}
             />
-            {mode === 'AI_TRANSFORMER'
+            {isAi
               ? 'AI TRANSFORMER (WEBGPU)'
-              : isDr
-              ? 'NEURAL DEAD RECKONING'
               : mode === 'GPS'
               ? 'GPS ACTIVE'
               : 'ACQUIRING POSITION'}
           </div>
 
-          {/* Motion State Pill (ZUPT) */}
-          <div
-            className={`flex items-center gap-1 px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase border ${
-              stepMetrics.isStationary
-                ? 'bg-slate-800 text-slate-400 border-slate-700'
-                : 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40'
-            }`}
-          >
-            {stepMetrics.isStationary ? (
-              <>
-                <Pause className="w-2.5 h-2.5" />
-                <span>STATIONARY (ZUPT)</span>
-              </>
-            ) : (
-              <>
-                {stepMetrics.walkDirection === 'BACKWARD' ? (
-                  <ArrowDown className="w-2.5 h-2.5 text-rose-400" />
-                ) : (
-                  <ArrowUp className="w-2.5 h-2.5 text-emerald-400" />
-                )}
-                <span>{stepMetrics.walkDirection}</span>
-              </>
-            )}
+          {/* Pipeline Tag */}
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase bg-indigo-950/60 text-indigo-300 border border-indigo-800/60">
+            <Activity className="w-2.5 h-2.5 text-indigo-400" />
+            <span>GAUSSIAN SMOOTHED</span>
           </div>
         </div>
 
-        {/* GPS Controls & Fallback Switch */}
+        {/* Controls */}
         <div className="flex items-center gap-2">
           {onLocateNow && (
             <button
@@ -158,36 +118,26 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
         </div>
       </div>
 
-      {/* Sensor Health Diagnostic Line with Direction Mode Switch */}
+      {/* Sensor Health Diagnostic Line */}
       <div className="flex items-center justify-between px-2.5 py-1.5 bg-slate-950/80 border border-slate-800/80 rounded-lg text-[11px] font-mono">
         <div className="flex items-center gap-1.5 text-slate-400 truncate">
           <Radio className="w-3 h-3 text-sky-400 shrink-0" />
           <span className="truncate">{sensorStatus.gpsStatusText}</span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={cycleDirectionMode}
-            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[10px] flex items-center gap-1"
-            title="Switch Stride Direction (AUTO / FORWARD / BACKWARD)"
-          >
-            <span>GEAR: {stepMetrics.directionMode}</span>
-          </button>
-
-          <div className="flex items-center gap-1 text-slate-400">
-            <Cpu className="w-3 h-3 text-indigo-400" />
-            {sensorStatus.hasHardwareMotion ? (
-              <span className="text-emerald-400">IMU LIVE</span>
-            ) : (
-              <span className="text-slate-400">KEYS READY</span>
-            )}
-          </div>
+        <div className="flex items-center gap-1 text-slate-400 shrink-0">
+          <Cpu className="w-3 h-3 text-indigo-400" />
+          {sensorStatus.hasHardwareMotion ? (
+            <span className="text-emerald-400">IMU LIVE (6-DOF)</span>
+          ) : (
+            <span className="text-slate-400">SIMULATOR READY</span>
+          )}
         </div>
       </div>
 
-      {/* Main Telemetry Grid */}
+      {/* Main Telemetry Grid (Step 3: Display Data) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {/* Metric: Location Coordinates */}
+        {/* Metric 1: Location Coordinates */}
         <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1 font-mono uppercase">
             <MapPin className="w-3.5 h-3.5 text-sky-400" />
@@ -201,7 +151,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           </div>
         </div>
 
-        {/* Metric: Heading & Compass */}
+        {/* Metric 2: Heading & Compass */}
         <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1 font-mono uppercase">
             <Compass className="w-3.5 h-3.5 text-indigo-400" />
@@ -220,40 +170,38 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           </div>
         </div>
 
-        {/* Metric: AI Neural Displacement / Stride */}
+        {/* Metric 3: ONNX Predicted Vector */}
         <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1 font-mono uppercase">
             <Zap className="w-3.5 h-3.5 text-indigo-400" />
-            <span>AI Neural Stride</span>
+            <span>ONNX Output</span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg text-slate-100 font-bold">
-              {stepMetrics.stepCount}
+              {aiMetrics?.lastDisplacement.magnitude.toFixed(2) ?? '0.00'}
             </span>
-            <span className="font-mono text-xs text-slate-400">updates</span>
+            <span className="font-mono text-xs text-slate-400">m / frame</span>
           </div>
           <div className="text-[10px] font-mono text-indigo-400/80 truncate">
-            {aiMetrics?.isLoaded
-              ? `AI Vec: ${aiMetrics.lastDisplacement.magnitude.toFixed(2)}m (IO-VNBD)`
-              : `SL: ${stepMetrics.currentStepLength.toFixed(2)}m (Weinberg)`}
+            dX: {aiMetrics?.lastDisplacement.dx.toFixed(2) ?? '0.00'} | dY: {aiMetrics?.lastDisplacement.dy.toFixed(2) ?? '0.00'}
           </div>
         </div>
 
-        {/* Metric: Distance & Speed */}
+        {/* Metric 4: Total Distance & Speed */}
         <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1 font-mono uppercase">
             <Gauge className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Dist / Speed</span>
+            <span>Distance / Speed</span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg text-slate-100 font-bold">
-              {stepMetrics.totalDistance >= 1000
-                ? (stepMetrics.totalDistance / 1000).toFixed(2) + ' km'
-                : stepMetrics.totalDistance.toFixed(1) + ' m'}
+              {navigationMetrics.totalDistanceMeters >= 1000
+                ? (navigationMetrics.totalDistanceMeters / 1000).toFixed(2) + ' km'
+                : navigationMetrics.totalDistanceMeters.toFixed(1) + ' m'}
             </span>
           </div>
           <div className="text-[10px] font-mono text-slate-400">
-            {stepMetrics.speedKmh.toFixed(1)} km/h ({stepMetrics.cadence} spm)
+            {navigationMetrics.currentSpeedKmh.toFixed(1)} km/h ({navigationMetrics.totalInferenceUpdates} inferences)
           </div>
         </div>
       </div>

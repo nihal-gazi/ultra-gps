@@ -1,10 +1,16 @@
 /**
  * Edge AI Inertial Odometry Engine.
- * Executes on-device Transformer neural network inference via ONNX Runtime Web with WebGPU acceleration.
- * Loads self-contained Uint8Array binary buffers to eliminate any external file dependencies.
+ * 
+ * Pipeline:
+ * 1. Sensor data is recorded (6-DOF Accelerometer + Gyroscope + Heading)
+ * 2. Sensor data is smoothened using Gaussian filtering
+ * 3. Data is displayed via state subscribers
+ * 4. Data is passed through ONNX Transformer (WebGPU / WASM)
+ * 5. Output displacement [dx, dy] is plotted onto the map
  */
 
 import * as ort from 'onnxruntime-web';
+import { GaussianIMUFilter6D } from '../utils/filter';
 
 export interface AIInferenceMetrics {
   isLoaded: boolean;
@@ -28,7 +34,10 @@ export class AIInertialEngine {
   private seqLen: number = 20;
   private inFeatures: number = 6;
   
-  // Rolling IMU buffer: [ax, ay, az, gz_rad, gx_rad, gy_rad]
+  // 1. Gaussian 6-DOF filter instance (Kernel Size: 7, Sigma: 1.2)
+  private gaussianFilter = new GaussianIMUFilter6D(7, 1.2);
+  
+  // Rolling IMU buffer of Gaussian-smoothed features: [ax, ay, az, gz_rad, gx_rad, gy_rad]
   private imuBuffer: number[][] = [];
   private lastInferenceTime: number = 0;
   private inferenceIntervalMs: number = 200; // 5Hz inference rate for smooth real-time tracking
@@ -50,7 +59,6 @@ export class AIInertialEngine {
   private listeners: Set<AIStateListener> = new Set();
 
   constructor() {
-    // Configure ONNX Runtime Web WASM options
     try {
       ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
       ort.env.wasm.simd = true;
@@ -75,8 +83,7 @@ export class AIInertialEngine {
   }
 
   /**
-   * Fetches the self-contained ONNX model as an ArrayBuffer and creates an ONNX Runtime session
-   * using WebGPU with WASM fallback.
+   * Initializes the ONNX Transformer session from a monolithic binary buffer
    */
   public async initializeModel(modelUrl: string = '/models/inertial_transformer.onnx'): Promise<boolean> {
     if (this.session) return true;
@@ -95,7 +102,7 @@ export class AIInertialEngine {
 
       const arrayBuffer = await response.arrayBuffer();
       const modelBytes = new Uint8Array(arrayBuffer);
-      console.log(`[AI Engine] Downloaded model buffer (${(modelBytes.byteLength / 1024).toFixed(1)} KB). Initializing session...`);
+      console.log(`[AI Engine] Model downloaded (${(modelBytes.byteLength / 1024).toFixed(1)} KB). Initializing session...`);
 
       let session: ort.InferenceSession | null = null;
       let usedProvider: 'webgpu' | 'wasm' = 'webgpu';
@@ -108,19 +115,18 @@ export class AIInertialEngine {
             graphOptimizationLevel: 'all',
           });
           usedProvider = 'webgpu';
-          console.log('[AI Engine] Successfully initialized with WebGPU execution provider.');
+          console.log('[AI Engine] Initialized with WebGPU execution provider.');
         } else {
-          throw new Error('WebGPU not supported on this browser context.');
+          throw new Error('WebGPU not supported.');
         }
       } catch (webGpuErr) {
-        console.warn('[AI Engine] WebGPU initialization notice (switching to WASM SIMD):', webGpuErr);
-        // 2. Fallback to WASM SIMD
+        console.warn('[AI Engine] Falling back to WASM SIMD provider:', webGpuErr);
         session = await ort.InferenceSession.create(modelBytes, {
           executionProviders: ['wasm'],
           graphOptimizationLevel: 'all',
         });
         usedProvider = 'wasm';
-        console.log('[AI Engine] Successfully initialized with WASM SIMD execution provider.');
+        console.log('[AI Engine] Initialized with WASM SIMD provider.');
       }
 
       this.session = session;
@@ -132,7 +138,7 @@ export class AIInertialEngine {
       this.notify();
       return true;
     } catch (err: any) {
-      console.error('[AI Engine] Failed to initialize ONNX Runtime session:', err);
+      console.error('[AI Engine] Initialization error:', err);
       this.metrics.isLoaded = false;
       this.metrics.isLoading = false;
       this.metrics.executionProvider = 'failed';
@@ -144,52 +150,79 @@ export class AIInertialEngine {
   }
 
   /**
-   * Pushes a real-time IMU sample into the rolling buffer and executes inference if interval elapsed
+   * Pipeline Steps 1, 2, 4:
+   * 1. Record raw sensor data
+   * 2. Gaussian smoothing of 6-DOF IMU channels
+   * 4. Feed Gaussian-smoothed sequence window into ONNX Transformer
    */
-  public processImuSample(
-    ax: number,
-    ay: number,
-    az: number,
-    gxDeg: number,
-    gyDeg: number,
-    gzDeg: number,
-    currentLat: number,
-    currentLng: number,
-    currentHeadingDeg: number,
-    timestamp: number = Date.now()
-  ): { newLat: number; newLng: number; displacementMeters: number; speedMps: number; isAiUpdated: boolean } {
-    // Convert gyro to rad/s matching IO-VNBD dataset standard
+  public processSensorSample(
+    rawAx: number,
+    rawAy: number,
+    rawAz: number,
+    rawGxDeg: number,
+    rawGyDeg: number,
+    rawGzDeg: number,
+    timestamp: number = Date.now(),
+    onInferenceOutput?: (displacementMeters: number, speedMps: number, headingDeltaDeg: number) => void
+  ): {
+    smoothedAx: number;
+    smoothedAy: number;
+    smoothedAz: number;
+    smoothedGx: number;
+    smoothedGy: number;
+    smoothedGz: number;
+    accelMagnitude: number;
+    gyroMagnitude: number;
+  } {
+    // Step 2: Gaussian Smoothing across all 6 IMU channels
+    const smoothed = this.gaussianFilter.process(
+      rawAx,
+      rawAy,
+      rawAz,
+      rawGxDeg,
+      rawGyDeg,
+      rawGzDeg
+    );
+
+    // Convert smoothed gyro to rad/s matching IO-VNBD dataset standard
     const degToRad = Math.PI / 180;
-    const sample = [ax, ay, az, gzDeg * degToRad, gxDeg * degToRad, gyDeg * degToRad];
+    const sample = [
+      smoothed.ax,
+      smoothed.ay,
+      smoothed.az,
+      smoothed.gz * degToRad,
+      smoothed.gx * degToRad,
+      smoothed.gy * degToRad,
+    ];
 
     this.imuBuffer.push(sample);
     if (this.imuBuffer.length > this.seqLen) {
       this.imuBuffer.shift();
     }
 
-    if (!this.session || this.imuBuffer.length < this.seqLen) {
-      return { newLat: currentLat, newLng: currentLng, displacementMeters: 0, speedMps: 0, isAiUpdated: false };
+    // Step 4: Pass through ONNX when window buffer is ready
+    if (this.session && this.imuBuffer.length >= this.seqLen) {
+      if (timestamp - this.lastInferenceTime >= this.inferenceIntervalMs) {
+        this.lastInferenceTime = timestamp;
+        this.runInference(onInferenceOutput);
+      }
     }
-
-    if (timestamp - this.lastInferenceTime < this.inferenceIntervalMs) {
-      return { newLat: currentLat, newLng: currentLng, displacementMeters: 0, speedMps: 0, isAiUpdated: false };
-    }
-
-    this.lastInferenceTime = timestamp;
-
-    // Run Asynchronous Transformer Inference
-    this.runInference(currentLat, currentLng, currentHeadingDeg);
 
     return {
-      newLat: currentLat,
-      newLng: currentLng,
-      displacementMeters: this.metrics.lastDisplacement.magnitude,
-      speedMps: this.metrics.predictedSpeedMps,
-      isAiUpdated: true,
+      smoothedAx: smoothed.ax,
+      smoothedAy: smoothed.ay,
+      smoothedAz: smoothed.az,
+      smoothedGx: smoothed.gx,
+      smoothedGy: smoothed.gy,
+      smoothedGz: smoothed.gz,
+      accelMagnitude: smoothed.accelMagnitude,
+      gyroMagnitude: smoothed.gyroMagnitude,
     };
   }
 
-  private async runInference(_currentLat: number, _currentLng: number, _currentHeadingDeg: number) {
+  private async runInference(
+    onInferenceOutput?: (displacementMeters: number, speedMps: number, headingDeltaDeg: number) => void
+  ) {
     if (!this.session || this.imuBuffer.length < this.seqLen) return;
 
     const t0 = performance.now();
@@ -209,7 +242,7 @@ export class AIInertialEngine {
       const results = await this.session.run(feeds);
       const latency = performance.now() - t0;
 
-      // Extract output tensor
+      // Extract output tensor [dx, dy, speed, delta_theta]
       const outputTensor = results.odometry_output || Object.values(results)[0];
       const outData = outputTensor.data as Float32Array;
 
@@ -238,12 +271,18 @@ export class AIInertialEngine {
       this.metrics.predictedHeadingDeltaDeg = Number(deltaThetaDeg.toFixed(2));
 
       this.notify();
+
+      // Step 5 trigger: pass output to location engine to plot
+      if (onInferenceOutput) {
+        onInferenceOutput(magnitude, speed, deltaThetaDeg);
+      }
     } catch (inferErr) {
-      console.warn('[AI Engine] Inference evaluation notice:', inferErr);
+      console.warn('[AI Engine] Inference notice:', inferErr);
     }
   }
 
   public reset() {
+    this.gaussianFilter.reset();
     this.imuBuffer = [];
     this.lastInferenceTime = 0;
     this.latencies = [];

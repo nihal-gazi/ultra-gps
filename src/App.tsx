@@ -6,7 +6,6 @@ import { TelemetryPanel } from './components/TelemetryPanel';
 import { AIModelStatusPanel } from './components/AIModelStatusPanel';
 import { SensorWaveform } from './components/SensorWaveform';
 import { SimulatorControls } from './components/SimulatorControls';
-import { CalibrationModal } from './components/CalibrationModal';
 import { AIArchitectureModal } from './components/AIArchitectureModal';
 
 export const App: React.FC = () => {
@@ -16,25 +15,21 @@ export const App: React.FC = () => {
     gpsEnabled,
     sensorStatus,
     toggleGps,
-    injectStep,
-    toggleWalkingSimulator,
+    injectSample,
+    toggleMotionSimulator,
     setManualHeading,
     setManualLocation,
-    setDirectionMode,
     resetTracking,
-    updateCalibration,
     requestSensorPermissions,
     acquireCurrentLocation,
   } = useLocationTracker();
 
-  const [isCalibrationOpen, setIsCalibrationOpen] = useState<boolean>(false);
   const [isArchitectureOpen, setIsArchitectureOpen] = useState<boolean>(false);
 
   return (
     <div className="flex flex-col w-full h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none">
       {/* Top Navigation Header */}
       <Header
-        onOpenCalibration={() => setIsCalibrationOpen(true)}
         onOpenArchitecture={() => setIsArchitectureOpen(true)}
         onRequestPermissions={requestSensorPermissions}
         onLocateNow={acquireCurrentLocation}
@@ -44,7 +39,7 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-        {/* Map View Section */}
+        {/* Map View Section (Step 5: Plotted Output) */}
         <div className="flex-1 h-[46vh] lg:h-full relative">
           <MapView
             location={state.currentLocation}
@@ -57,33 +52,32 @@ export const App: React.FC = () => {
           />
         </div>
 
-        {/* Sidebar / Controls Panel */}
+        {/* Sidebar / Controls Panel (Steps 1, 2, 3, 4) */}
         <div className="w-full lg:w-96 lg:max-w-md h-[54vh] lg:h-full bg-slate-950 border-t lg:border-t-0 lg:border-l border-slate-800 flex flex-col gap-3 p-3 overflow-y-auto z-10">
-          {/* Edge AI Neural Model Telemetry Panel */}
+          {/* Step 4: ONNX Transformer WebGPU Telemetry */}
           <AIModelStatusPanel
             aiMetrics={aiMetrics}
             onOpenArchitecture={() => setIsArchitectureOpen(true)}
           />
 
-          {/* Real-time HUD Telemetry */}
+          {/* Step 3: Real-time Telemetry Display */}
           <TelemetryPanel
             mode={state.mode}
             location={state.currentLocation}
             headingData={state.headingData}
-            stepMetrics={state.stepMetrics}
+            navigationMetrics={state.navigationMetrics}
             sensorStatus={sensorStatus}
             aiMetrics={aiMetrics}
             gpsEnabled={gpsEnabled}
             onToggleGps={toggleGps}
             onRequestPermissions={requestSensorPermissions}
             onLocateNow={acquireCurrentLocation}
-            onSetDirectionMode={setDirectionMode}
           />
 
-          {/* Real-time Sensor Accelerometer & Gyroscope Waveforms */}
+          {/* Step 2 & 3: Sensor Gaussian-Smoothed Waveforms Display */}
           <SensorWaveform
             recentMotion={state.recentMotion}
-            peakThreshold={state.config.peakThreshold}
+            peakThreshold={0.25}
             pitch={state.headingData.pitch}
             roll={state.headingData.roll}
             heading={state.headingData.heading}
@@ -91,28 +85,17 @@ export const App: React.FC = () => {
             hasHardwareMotion={sensorStatus.hasHardwareMotion}
           />
 
-          {/* Interactive Simulation & Heading Controls */}
+          {/* Step 1: Simulator & Bearing Orientation Controls */}
           <SimulatorControls
             isSimulating={sensorStatus.isSimulating}
             currentHeading={state.headingData.heading}
-            directionMode={state.stepMetrics.directionMode}
-            onInjectStep={injectStep}
-            onToggleSimulator={toggleWalkingSimulator}
+            onInjectSample={injectSample}
+            onToggleSimulator={toggleMotionSimulator}
             onSetHeading={setManualHeading}
-            onSetDirectionMode={setDirectionMode}
             onResetTracking={resetTracking}
-            onOpenCalibration={() => setIsCalibrationOpen(true)}
           />
         </div>
       </div>
-
-      {/* Calibration Modal */}
-      <CalibrationModal
-        isOpen={isCalibrationOpen}
-        onClose={() => setIsCalibrationOpen(false)}
-        config={state.config}
-        onSave={updateCalibration}
-      />
 
       {/* AI Architecture & IO-VNBD Benchmark Modal */}
       <AIArchitectureModal

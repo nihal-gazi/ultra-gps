@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { pdrEngine } from '../services/pdrEngine';
 import { aiInertialEngine } from '../services/aiInertialEngine';
-import type { PDRState } from '../services/pdrEngine';
-import type { SensorStatus, TrackingMode, CalibrationConfig, WalkDirection, AIInferenceMetrics } from '../types';
+import type { TrackerState } from '../services/pdrEngine';
+import type { SensorStatus, TrackingMode, AIInferenceMetrics } from '../types';
 
 export function useLocationTracker() {
-  const [pdrState, setPdrState] = useState<PDRState>(() => pdrEngine.getState());
+  const [trackerState, setTrackerState] = useState<TrackerState>(() => pdrEngine.getState());
   const [aiMetrics, setAiMetrics] = useState<AIInferenceMetrics>(() => aiInertialEngine.getMetrics());
   const [gpsEnabled, setGpsEnabled] = useState<boolean>(true);
   const [sensorStatus, setSensorStatus] = useState<SensorStatus>({
@@ -23,14 +23,14 @@ export function useLocationTracker() {
 
   const watchIdRef = useRef<number | null>(null);
   const simIntervalRef = useRef<number | null>(null);
-  const simStepPhaseRef = useRef<number>(0);
+  const simPhaseRef = useRef<number>(0);
   const motionCountRef = useRef<number>(0);
   const hasAbsoluteOrientationRef = useRef<boolean>(false);
 
-  // Subscribe to PDR Engine & AI Engine state updates
+  // Subscribe to Tracker Engine & AI Engine updates
   useEffect(() => {
-    const unsubPdr = pdrEngine.subscribe((newState) => {
-      setPdrState(newState);
+    const unsubTracker = pdrEngine.subscribe((newState) => {
+      setTrackerState(newState);
     });
     const unsubAi = aiInertialEngine.subscribe((newAiMetrics) => {
       setAiMetrics(newAiMetrics);
@@ -40,7 +40,7 @@ export function useLocationTracker() {
     aiInertialEngine.initializeModel();
 
     return () => {
-      unsubPdr();
+      unsubTracker();
       unsubAi();
     };
   }, []);
@@ -72,16 +72,6 @@ export function useLocationTracker() {
         granted = granted && motionResponse === 'granted';
       }
 
-      // Query Chromium Permissions API for sensors if available
-      if ('permissions' in navigator) {
-        try {
-          await Promise.all([
-            (navigator.permissions as any).query({ name: 'accelerometer' }).catch(() => null),
-            (navigator.permissions as any).query({ name: 'gyroscope' }).catch(() => null),
-          ]);
-        } catch {}
-      }
-
       setSensorStatus((prev) => ({
         ...prev,
         permissionGranted: granted,
@@ -91,7 +81,7 @@ export function useLocationTracker() {
 
       return granted;
     } catch (err) {
-      console.warn('Sensor permission request fallback:', err);
+      console.warn('Sensor permission fallback:', err);
       setSensorStatus((prev) => ({
         ...prev,
         permissionGranted: true,
@@ -100,14 +90,12 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Clean, Single-Source Orientation & Motion Listeners with Gyroscope Extraction
+  // Step 1: Record Sensor Streams (Hardware Accelerometer, Gyroscope, and Orientation)
   useEffect(() => {
-    // 1. DeviceMotion Handler (Accelerometer + Gyroscope 3-Axis)
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
       let ax = 0;
       let ay = 0;
       let az = 0;
-      let hasGravity = false;
 
       if (
         event.acceleration &&
@@ -118,7 +106,6 @@ export function useLocationTracker() {
         ax = event.acceleration.x;
         ay = event.acceleration.y;
         az = event.acceleration.z;
-        hasGravity = false;
       } else if (
         event.accelerationIncludingGravity &&
         event.accelerationIncludingGravity.x !== null &&
@@ -128,7 +115,6 @@ export function useLocationTracker() {
         ax = event.accelerationIncludingGravity.x;
         ay = event.accelerationIncludingGravity.y;
         az = event.accelerationIncludingGravity.z;
-        hasGravity = true;
       } else {
         return;
       }
@@ -137,9 +123,9 @@ export function useLocationTracker() {
 
       // Extract 3-Axis Gyroscope Angular Velocity (deg/s)
       const rot = event.rotationRate;
-      const gx = rot?.beta ?? 0;   // X-axis (Pitch rate)
-      const gy = rot?.gamma ?? 0;  // Y-axis (Roll rate)
-      const gz = rot?.alpha ?? 0;  // Z-axis (Yaw rate)
+      const gx = rot?.beta ?? 0;
+      const gy = rot?.gamma ?? 0;
+      const gz = rot?.alpha ?? 0;
 
       const hasGyroData = rot !== null && (rot.alpha !== null || rot.beta !== null || rot.gamma !== null);
 
@@ -151,42 +137,27 @@ export function useLocationTracker() {
         motionEventCount: motionCountRef.current,
       }));
 
-      pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, hasGravity, Date.now());
+      // Pass directly to the 5-step tracker pipeline
+      pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, Date.now());
     };
 
-    // 2. Absolute Orientation Handler (Android Magnetic North)
     const handleAbsoluteOrientation = (event: DeviceOrientationEvent) => {
       if (event.alpha === null) return;
       hasAbsoluteOrientationRef.current = true;
-
-      setSensorStatus((prev) => ({
-        ...prev,
-        gyroAvailable: true,
-      }));
-
+      setSensorStatus((prev) => ({ ...prev, gyroAvailable: true }));
       pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, undefined, true);
     };
 
-    // 3. Standard Orientation Handler (iOS Safari & Fallback)
     const handleStandardOrientation = (event: DeviceOrientationEvent) => {
       const webkitHeading = (event as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
-
-      // On iOS: webkitCompassHeading is always preferred
       if (webkitHeading !== undefined && !isNaN(webkitHeading)) {
-        setSensorStatus((prev) => ({
-          ...prev,
-          gyroAvailable: true,
-        }));
+        setSensorStatus((prev) => ({ ...prev, gyroAvailable: true }));
         pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, webkitHeading, true);
         return;
       }
 
-      // On Android / desktop: Only use deviceorientation if deviceorientationabsolute is NOT active
       if (!hasAbsoluteOrientationRef.current && event.alpha !== null) {
-        setSensorStatus((prev) => ({
-          ...prev,
-          gyroAvailable: true,
-        }));
+        setSensorStatus((prev) => ({ ...prev, gyroAvailable: true }));
         pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, undefined, false);
       }
     };
@@ -229,7 +200,7 @@ export function useLocationTracker() {
                 if (!prev.hasInitialFix) {
                   return {
                     ...prev,
-                    gpsStatusText: `Coarse location found: ${data.city || 'Local area'} (Acquiring precision GPS...)`,
+                    gpsStatusText: `Coarse location: ${data.city || 'Local area'} (Acquiring precision GPS...)`,
                   };
                 }
                 return prev;
@@ -245,7 +216,7 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Primary GPS Acquisition Function
+  // GPS Acquisition
   const acquireCurrentLocation = useCallback(() => {
     if (!('geolocation' in navigator)) {
       setSensorStatus((prev) => ({
@@ -254,13 +225,13 @@ export function useLocationTracker() {
         gpsActive: false,
         gpsStatusText: 'Geolocation API not supported',
       }));
-      pdrEngine.setMode('DEAD_RECKONING');
+      pdrEngine.setMode('AI_TRANSFORMER');
       return;
     }
 
     setSensorStatus((prev) => ({
       ...prev,
-      gpsStatusText: 'Requesting GPS coordinates...',
+      gpsStatusText: 'Requesting GPS fix...',
     }));
 
     navigator.geolocation.getCurrentPosition(
@@ -274,7 +245,7 @@ export function useLocationTracker() {
         }));
       },
       (highAccError) => {
-        console.warn('High-accuracy GPS failed, trying standard:', highAccError.message);
+        console.warn('High-accuracy GPS failed:', highAccError.message);
         navigator.geolocation.getCurrentPosition(
           (pos) => {
             pdrEngine.updateGpsPosition(pos.coords, pos.timestamp);
@@ -286,11 +257,11 @@ export function useLocationTracker() {
             }));
           },
           (lowAccError) => {
-            console.warn('Standard GPS failed:', lowAccError.message);
+            console.warn('GPS unavailable:', lowAccError.message);
             setSensorStatus((prev) => ({
               ...prev,
               gpsActive: false,
-              gpsStatusText: `GPS unavailable (${lowAccError.message}). Using Dead Reckoning.`,
+              gpsStatusText: `GPS unavailable. Using Neural Inertial Tracking.`,
             }));
             fetchIpGeolocation();
           },
@@ -308,17 +279,17 @@ export function useLocationTracker() {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
-      pdrEngine.setMode('DEAD_RECKONING');
+      pdrEngine.setMode('AI_TRANSFORMER');
       setSensorStatus((prev) => ({
         ...prev,
         gpsActive: false,
-        gpsStatusText: 'GPS Disabled (Using Neural Dead Reckoning)',
+        gpsStatusText: 'GPS Disabled (Neural Inertial Active)',
       }));
       return;
     }
 
     if (!('geolocation' in navigator)) {
-      pdrEngine.setMode('DEAD_RECKONING');
+      pdrEngine.setMode('AI_TRANSFORMER');
       setSensorStatus((prev) => ({
         ...prev,
         gpsAvailable: false,
@@ -346,14 +317,10 @@ export function useLocationTracker() {
           setSensorStatus((prev) => ({
             ...prev,
             gpsActive: false,
-            gpsStatusText: `GPS lost (${err.message}) - Neural Dead Reckoning active`,
+            gpsStatusText: `GPS lost (${err.message}) - Neural Inertial Active`,
           }));
         },
-        {
-          enableHighAccuracy: true,
-          maximumAge: 2000,
-          timeout: 15000,
-        }
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
       );
     } catch (e) {
       console.warn('watchPosition error:', e);
@@ -367,7 +334,7 @@ export function useLocationTracker() {
     };
   }, [gpsEnabled, acquireCurrentLocation]);
 
-  // Global Keyboard Controls (W/↑ Step Forward, S/↓ Step Backward)
+  // Keyboard Navigation Controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -376,10 +343,7 @@ export function useLocationTracker() {
 
       if (e.code === 'KeyW' || e.code === 'ArrowUp') {
         e.preventDefault();
-        pdrEngine.injectSimulatedStep(0.75, 'FORWARD');
-      } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
-        e.preventDefault();
-        pdrEngine.injectSimulatedStep(0.75, 'BACKWARD');
+        pdrEngine.injectSimulatedSample(0.6, 2.2, 9.81, 10.0, 4.0, 2.0);
       } else if (e.code === 'KeyA' || e.code === 'ArrowLeft') {
         e.preventDefault();
         const current = pdrEngine.getState().headingData.heading;
@@ -390,7 +354,7 @@ export function useLocationTracker() {
         pdrEngine.setManualHeading((current + 15) % 360);
       } else if (e.code === 'Space') {
         e.preventDefault();
-        toggleWalkingSimulator();
+        toggleMotionSimulator();
       }
     };
 
@@ -404,47 +368,43 @@ export function useLocationTracker() {
 
   const setMode = useCallback((mode: TrackingMode) => {
     pdrEngine.setMode(mode);
-    if (mode === 'DEAD_RECKONING' || mode === 'AI_TRANSFORMER') {
+    if (mode === 'AI_TRANSFORMER') {
       setGpsEnabled(false);
     } else if (mode === 'GPS') {
       setGpsEnabled(true);
     }
   }, []);
 
-  const setDirectionMode = useCallback((dirMode: 'AUTO' | 'FORWARD' | 'BACKWARD') => {
-    pdrEngine.setDirectionMode(dirMode);
+  const injectSample = useCallback((ax: number = 0.5, ay: number = 2.0, az: number = 9.81) => {
+    pdrEngine.injectSimulatedSample(ax, ay, az);
   }, []);
 
-  const injectStep = useCallback((stepLength: number = 0.72, direction: WalkDirection = 'FORWARD') => {
-    pdrEngine.injectSimulatedStep(stepLength, direction);
-  }, []);
-
-  // Continuous Walking Simulator with realistic 3-axis Accelerometer and 3-axis Gyroscope waveforms
-  const toggleWalkingSimulator = useCallback(() => {
+  // Continuous Motion Simulator feeding realistic 6-DOF IMU streams into Gaussian + ONNX pipeline
+  const toggleMotionSimulator = useCallback(() => {
     if (simIntervalRef.current !== null) {
       window.clearInterval(simIntervalRef.current);
       simIntervalRef.current = null;
       setSensorStatus((prev) => ({ ...prev, isSimulating: false }));
     } else {
       setSensorStatus((prev) => ({ ...prev, isSimulating: true }));
-      simStepPhaseRef.current = 0;
+      simPhaseRef.current = 0;
 
       simIntervalRef.current = window.setInterval(() => {
-        simStepPhaseRef.current += 0.14;
-        const phase = simStepPhaseRef.current;
+        simPhaseRef.current += 0.15;
+        const phase = simPhaseRef.current;
 
-        // Realistic gait accelerations
-        const ax = Math.sin(phase * 0.5) * 0.5 + (Math.random() - 0.5) * 0.15;
-        const ay = Math.sin(phase) * 2.2 + Math.cos(phase * 2) * 0.5 + (Math.random() - 0.5) * 0.2;
-        const az = 9.81 + Math.cos(phase) * 1.6 + (Math.random() - 0.5) * 0.2;
+        // Realistic IMU accelerations
+        const ax = Math.sin(phase * 0.5) * 0.6 + (Math.random() - 0.5) * 0.2;
+        const ay = Math.sin(phase) * 2.4 + Math.cos(phase * 2) * 0.6 + (Math.random() - 0.5) * 0.2;
+        const az = 9.81 + Math.cos(phase) * 1.8 + (Math.random() - 0.5) * 0.2;
 
-        // Realistic gait angular velocities (Pitch, Roll, Yaw rates in deg/s)
-        const gx = Math.sin(phase) * 14.5 + (Math.random() - 0.5) * 2.0;
-        const gy = Math.cos(phase * 0.5) * 8.2 + (Math.random() - 0.5) * 1.5;
+        // Realistic angular velocities (deg/s)
+        const gx = Math.sin(phase) * 15.0 + (Math.random() - 0.5) * 2.0;
+        const gy = Math.cos(phase * 0.5) * 8.5 + (Math.random() - 0.5) * 1.5;
         const gz = Math.sin(phase * 0.5) * 5.0 + (Math.random() - 0.5) * 1.0;
 
-        pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, true, Date.now());
-      }, 25);
+        pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, Date.now());
+      }, 30);
     }
   }, []);
 
@@ -466,27 +426,21 @@ export function useLocationTracker() {
   }, []);
 
   const resetTracking = useCallback(() => {
-    pdrEngine.resetPathAndMetrics();
-  }, []);
-
-  const updateCalibration = useCallback((config: Partial<CalibrationConfig>) => {
-    pdrEngine.updateCalibration(config);
+    pdrEngine.resetTracking();
   }, []);
 
   return {
-    state: pdrState,
+    state: trackerState,
     aiMetrics,
     gpsEnabled,
     sensorStatus,
     toggleGps,
     setMode,
-    setDirectionMode,
-    injectStep,
-    toggleWalkingSimulator,
+    injectSample,
+    toggleMotionSimulator,
     setManualHeading,
     setManualLocation,
     resetTracking,
-    updateCalibration,
     requestSensorPermissions,
     acquireCurrentLocation,
   };

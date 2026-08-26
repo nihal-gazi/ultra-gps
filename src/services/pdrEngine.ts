@@ -1,6 +1,12 @@
 /**
- * Pedestrian Dead Reckoning (PDR) & Neural Inertial Engine.
- * Integrates Edge Transformer Inference (ONNX WebGPU), Accelerometer, Gyroscope, Geodesy, and ZUPT Gating.
+ * Neural Inertial Tracking Engine.
+ * 
+ * Implements the streamlined 5-step non-GPS tracking pipeline:
+ * 1. Sensor data is recorded (Accelerometer, Gyroscope, Heading)
+ * 2. Sensor data is smoothened using Gaussian filtering
+ * 3. Data is displayed via state subscribers
+ * 4. Data is passed through ONNX Transformer
+ * 5. Output displacement is plotted onto the map
  */
 
 import type {
@@ -8,35 +14,29 @@ import type {
   HeadingData,
   MotionSample,
   PathPoint,
-  StepMetrics,
+  NavigationMetrics,
   TrackingMode,
-  CalibrationConfig,
-  WalkDirection,
 } from '../types';
 import { calculateDestinationPoint, calculateHaversineDistance } from '../utils/geodesy';
-import { OrientationInvariantGravityFilter, LowPassFilter, StepDetector } from '../utils/filter';
-import { SmoothHeadingFilter, computeRobustCompassHeading, normalizeDegrees } from '../utils/orientation';
+import { computeRobustCompassHeading, normalizeDegrees } from '../utils/orientation';
 import { aiInertialEngine } from './aiInertialEngine';
 
-export interface PDRState {
+export interface TrackerState {
   mode: TrackingMode;
   currentLocation: Coordinates;
   headingData: HeadingData;
-  stepMetrics: StepMetrics;
+  navigationMetrics: NavigationMetrics;
   recentMotion: MotionSample[];
   pathHistory: PathPoint[];
-  config: CalibrationConfig;
   hasReceivedFix: boolean;
-  isAiEnabled: boolean;
 }
 
-export type PDRStateListener = (state: PDRState) => void;
+export type TrackerStateListener = (state: TrackerState) => void;
 
-export class PDREngine {
+export class TrackerEngine {
   private mode: TrackingMode = 'SEARCHING_GPS';
   private hasReceivedFix: boolean = false;
   private hasPreciseGpsFix: boolean = false;
-  private isAiEnabled: boolean = true;
 
   private currentLocation: Coordinates = {
     latitude: 28.6139,
@@ -55,47 +55,21 @@ export class PDREngine {
     calibrated: false,
   };
 
-  private stepMetrics: StepMetrics = {
-    stepCount: 0,
-    lastStepTimestamp: 0,
-    cadence: 0,
-    currentStepLength: 0.7,
-    totalDistance: 0,
-    speedMps: 0,
-    speedKmh: 0,
-    isStationary: true,
-    motionVariance: 0,
-    walkDirection: 'FORWARD',
-    directionMode: 'AUTO',
-    aiDisplacementMeters: 0,
-    aiHeadingDeltaDeg: 0,
-  };
-
-  private config: CalibrationConfig = {
-    weinbergK: 0.45,
-    peakThreshold: 0.25,
-    minStepIntervalMs: 200,
-    smoothingFactor: 0.35,
-    gyroWeight: 0.94,
-    stationaryVarianceThreshold: 0.02,
+  private navigationMetrics: NavigationMetrics = {
+    totalDistanceMeters: 0,
+    currentSpeedMps: 0,
+    currentSpeedKmh: 0,
+    lastDisplacementMeters: 0,
+    totalInferenceUpdates: 0,
+    lastUpdateTimestamp: 0,
   };
 
   private recentMotion: MotionSample[] = [];
   private readonly maxMotionSamples = 80;
   private pathHistory: PathPoint[] = [];
-  private readonly maxPathPoints = 500;
+  private readonly maxPathPoints = 800;
 
-  // Filter instances
-  private gravityFilter = new OrientationInvariantGravityFilter();
-  private magnitudeLpf = new LowPassFilter(0.35);
-  private stepDetector = new StepDetector(0.45, 0.25, 200, 0.02, 9);
-  private headingFilter = new SmoothHeadingFilter(0);
-
-  // Step timestamps for cadence calculation (sliding window of 10s)
-  private stepTimestamps: number[] = [];
-
-  // Listeners
-  private listeners: Set<PDRStateListener> = new Set();
+  private listeners: Set<TrackerStateListener> = new Set();
 
   constructor(initialLocation?: { lat: number; lng: number }) {
     if (initialLocation) {
@@ -104,7 +78,7 @@ export class PDREngine {
     }
   }
 
-  public subscribe(listener: PDRStateListener): () => void {
+  public subscribe(listener: TrackerStateListener): () => void {
     this.listeners.add(listener);
     listener(this.getState());
     return () => {
@@ -117,46 +91,20 @@ export class PDREngine {
     this.listeners.forEach((listener) => listener(state));
   }
 
-  public getState(): PDRState {
+  public getState(): TrackerState {
     return {
       mode: this.mode,
       currentLocation: { ...this.currentLocation },
       headingData: { ...this.headingData },
-      stepMetrics: { ...this.stepMetrics },
+      navigationMetrics: { ...this.navigationMetrics },
       recentMotion: [...this.recentMotion],
       pathHistory: [...this.pathHistory],
-      config: { ...this.config },
       hasReceivedFix: this.hasReceivedFix,
-      isAiEnabled: this.isAiEnabled,
     };
   }
 
   public setMode(newMode: TrackingMode) {
     this.mode = newMode;
-    this.notify();
-  }
-
-  public toggleAiMode() {
-    this.isAiEnabled = !this.isAiEnabled;
-    this.notify();
-  }
-
-  public setDirectionMode(dirMode: 'AUTO' | 'FORWARD' | 'BACKWARD') {
-    this.stepMetrics.directionMode = dirMode;
-    if (dirMode !== 'AUTO') {
-      this.stepMetrics.walkDirection = dirMode;
-    }
-    this.notify();
-  }
-
-  public updateCalibration(partialConfig: Partial<CalibrationConfig>) {
-    this.config = { ...this.config, ...partialConfig };
-    this.stepDetector.updateConfig(
-      this.config.weinbergK,
-      this.config.peakThreshold,
-      this.config.minStepIntervalMs,
-      this.config.stationaryVarianceThreshold
-    );
     this.notify();
   }
 
@@ -166,7 +114,7 @@ export class PDREngine {
     this.currentLocation.latitude = lat;
     this.currentLocation.longitude = lng;
     this.hasReceivedFix = true;
-    this.recordPathPoint(lat, lng, Date.now(), 'SEARCHING_GPS', this.headingData.heading, 'FORWARD', 500);
+    this.recordPathPoint(lat, lng, Date.now(), 'SEARCHING_GPS', this.headingData.heading, 500);
     this.notify();
   }
 
@@ -194,7 +142,6 @@ export class PDREngine {
     };
 
     if (heading !== null && !isNaN(heading)) {
-      this.headingFilter.reset(heading);
       this.headingData.heading = heading;
     }
 
@@ -204,7 +151,7 @@ export class PDREngine {
       if (this.pathHistory.length > 0) {
         const d = calculateHaversineDistance(prevLat, prevLng, lat, lng);
         if (d > 1 && d < 100) {
-          this.stepMetrics.totalDistance += d;
+          this.navigationMetrics.totalDistanceMeters += d;
         }
       }
 
@@ -214,7 +161,6 @@ export class PDREngine {
         timestamp,
         'GPS',
         this.headingData.heading,
-        'FORWARD',
         accuracy !== null ? accuracy : undefined
       );
     }
@@ -243,10 +189,8 @@ export class PDREngine {
       source = 'alpha';
     }
 
-    const smoothedHeading = this.headingFilter.filter(rawHeading);
-
     this.headingData = {
-      heading: Number(smoothedHeading.toFixed(1)),
+      heading: Number(rawHeading.toFixed(1)),
       rawHeading: Number(rawHeading.toFixed(1)),
       source,
       pitch: Number((beta ?? 0).toFixed(1)),
@@ -257,6 +201,14 @@ export class PDREngine {
     this.notify();
   }
 
+  /**
+   * Pure 5-Step Non-GPS Execution:
+   * 1. Record 6-DOF sensor sample
+   * 2. Gaussian smoothing of channels
+   * 3. Display data on HUD / Waveform
+   * 4. Feed to ONNX Transformer
+   * 5. Plot ONNX output displacement
+   */
   public processDeviceMotion(
     ax: number,
     ay: number,
@@ -264,123 +216,69 @@ export class PDREngine {
     gx: number = 0,
     gy: number = 0,
     gz: number = 0,
-    hasGravity: boolean = true,
     timestamp: number = Date.now()
   ) {
-    let rawMag: number;
-    let dynamicAcc: number;
+    const rawMag = Math.sqrt(ax * ax + ay * ay + az * az);
 
-    if (hasGravity) {
-      const filtered = this.gravityFilter.process(ax, ay, az);
-      rawMag = filtered.rawNorm;
-      dynamicAcc = filtered.dynamicAcc;
-    } else {
-      dynamicAcc = Math.sqrt(ax * ax + ay * ay + az * az);
-      rawMag = dynamicAcc;
-    }
-
-    const filteredMag = this.magnitudeLpf.filter(dynamicAcc);
-    const gyroMag = Math.sqrt(gx * gx + gy * gy + gz * gz);
-
-    // 1. Feed real-time 6-DOF stream into Transformer WebGPU AI Engine
-    aiInertialEngine.processImuSample(
+    // Steps 1, 2, 4: Record, Gaussian Smooth, and Pass into ONNX
+    const smoothed = aiInertialEngine.processSensorSample(
       ax,
       ay,
       az,
       gx,
       gy,
       gz,
-      this.currentLocation.latitude,
-      this.currentLocation.longitude,
-      this.headingData.heading,
-      timestamp
+      timestamp,
+      (displacementMeters, speedMps, _headingDeltaDeg) => {
+        // Step 5: Plot ONNX displacement output onto the map
+        this.handleOnnxOdometryUpdate(displacementMeters, speedMps, timestamp);
+      }
     );
 
-    // 2. Kinematic Step Detector with ZUPT stationary gating
-    const detection = this.stepDetector.processSample(filteredMag, ay, timestamp);
-
-    this.stepMetrics.isStationary = detection.isStationary;
-    this.stepMetrics.motionVariance = Number(detection.variance.toFixed(3));
-
-    let effectiveDirection: WalkDirection = detection.detectedDirection;
-    if (this.stepMetrics.directionMode !== 'AUTO') {
-      effectiveDirection = this.stepMetrics.directionMode;
-    }
-    this.stepMetrics.walkDirection = effectiveDirection;
-
+    // Step 3: Record sample for live HUD waveform display
     const sample: MotionSample = {
       timestamp,
-      ax,
-      ay,
-      az,
+      rawAx: Number(ax.toFixed(2)),
+      rawAy: Number(ay.toFixed(2)),
+      rawAz: Number(az.toFixed(2)),
+      rawGx: Number(gx.toFixed(1)),
+      rawGy: Number(gy.toFixed(1)),
+      rawGz: Number(gz.toFixed(1)),
+      ax: Number(smoothed.smoothedAx.toFixed(2)),
+      ay: Number(smoothed.smoothedAy.toFixed(2)),
+      az: Number(smoothed.smoothedAz.toFixed(2)),
+      gx: Number(smoothed.smoothedGx.toFixed(1)),
+      gy: Number(smoothed.smoothedGy.toFixed(1)),
+      gz: Number(smoothed.smoothedGz.toFixed(1)),
       rawMagnitude: Number(rawMag.toFixed(2)),
-      filteredMagnitude: Number(filteredMag.toFixed(2)),
-      isPeak: detection.isStep,
-      stepLength: detection.stepLength,
-      isStationary: detection.isStationary,
-      gx: Number(gx.toFixed(1)),
-      gy: Number(gy.toFixed(1)),
-      gz: Number(gz.toFixed(1)),
-      gyroMagnitude: Number(gyroMag.toFixed(1)),
+      filteredMagnitude: Number(smoothed.accelMagnitude.toFixed(2)),
+      gyroMagnitude: Number(smoothed.gyroMagnitude.toFixed(1)),
     };
 
     this.pushMotionSample(sample);
-
-    if (detection.isStep && !detection.isStationary) {
-      // If AI model has inferred a neural vector, blend it with Weinberg model
-      const aiMetrics = aiInertialEngine.getMetrics();
-      let stepLen = detection.stepLength;
-      if (aiMetrics.isLoaded && aiMetrics.lastDisplacement.magnitude > 0.1) {
-        stepLen = Math.max(0.35, Math.min(1.4, (stepLen * 0.4) + (aiMetrics.lastDisplacement.magnitude * 0.6)));
-        this.stepMetrics.aiDisplacementMeters = aiMetrics.lastDisplacement.magnitude;
-      }
-      this.handleStepDetected(stepLen, effectiveDirection, timestamp);
-    } else {
-      if (detection.isStationary && Date.now() - this.stepMetrics.lastStepTimestamp > 2500) {
-        this.stepMetrics.cadence = 0;
-        this.stepMetrics.speedMps = 0;
-        this.stepMetrics.speedKmh = 0;
-      }
-      this.notify();
-    }
+    this.notify();
   }
 
-  public handleStepDetected(
-    stepLength: number,
-    direction: WalkDirection = 'FORWARD',
-    timestamp: number = Date.now()
-  ) {
-    this.stepMetrics.stepCount += 1;
-    this.stepMetrics.lastStepTimestamp = timestamp;
-    this.stepMetrics.currentStepLength = stepLength;
-    this.stepMetrics.totalDistance += stepLength;
-    this.stepMetrics.isStationary = false;
-    this.stepMetrics.walkDirection = direction;
+  /**
+   * Step 5: Plot ONNX odometry output displacement onto map
+   */
+  private handleOnnxOdometryUpdate(displacementMeters: number, speedMps: number, timestamp: number) {
+    if (displacementMeters <= 0.001) return;
 
-    this.stepTimestamps.push(timestamp);
-    const tenSecondsAgo = timestamp - 10000;
-    this.stepTimestamps = this.stepTimestamps.filter((t) => t >= tenSecondsAgo);
-    const cadence = (this.stepTimestamps.length / 10) * 60;
-    this.stepMetrics.cadence = Number(cadence.toFixed(1));
+    this.navigationMetrics.lastDisplacementMeters = Number(displacementMeters.toFixed(3));
+    this.navigationMetrics.totalDistanceMeters += displacementMeters;
+    this.navigationMetrics.currentSpeedMps = speedMps;
+    this.navigationMetrics.currentSpeedKmh = Number((speedMps * 3.6).toFixed(1));
+    this.navigationMetrics.totalInferenceUpdates += 1;
+    this.navigationMetrics.lastUpdateTimestamp = timestamp;
 
-    const speedMps = (cadence / 60) * stepLength;
-    this.stepMetrics.speedMps = Number(speedMps.toFixed(2));
-    this.stepMetrics.speedKmh = Number((speedMps * 3.6).toFixed(2));
-
-    const effectiveBearing =
-      direction === 'BACKWARD'
-        ? normalizeDegrees(this.headingData.heading + 180)
-        : this.headingData.heading;
-
-    if (this.mode === 'DEAD_RECKONING' || this.mode === 'AI_TRANSFORMER' || this.mode === 'SEARCHING_GPS') {
+    if (this.mode === 'AI_TRANSFORMER' || this.mode === 'SEARCHING_GPS') {
       const { lat: newLat, lng: newLng } = calculateDestinationPoint(
         this.currentLocation.latitude,
         this.currentLocation.longitude,
-        stepLength,
-        effectiveBearing
+        displacementMeters,
+        this.headingData.heading
       );
-
-      const targetMode: TrackingMode = this.isAiEnabled ? 'AI_TRANSFORMER' : 'DEAD_RECKONING';
 
       this.currentLocation = {
         ...this.currentLocation,
@@ -388,39 +286,29 @@ export class PDREngine {
         longitude: newLng,
         speed: speedMps,
         heading: this.headingData.heading,
-        accuracy: Math.min(50, (this.currentLocation.accuracy ?? 10) + 0.15),
+        accuracy: Math.min(30, (this.currentLocation.accuracy ?? 8) + 0.05),
       };
 
       this.recordPathPoint(
         newLat,
         newLng,
         timestamp,
-        targetMode,
+        'AI_TRANSFORMER',
         this.headingData.heading,
-        direction,
         this.currentLocation.accuracy ?? undefined,
-        this.stepMetrics.stepCount
+        displacementMeters
       );
     }
 
     this.notify();
   }
 
-  public injectSimulatedStep(stepLength: number = 0.72, direction: WalkDirection = 'FORWARD') {
-    const now = Date.now();
-    const simAx = (Math.random() - 0.5) * 0.4;
-    const simAy = direction === 'BACKWARD' ? -2.2 : 2.4;
-    const simAz = 9.81 + 1.8;
-    const simGx = 12.0;
-    const simGy = 6.5;
-    const simGz = 4.0;
-    this.processDeviceMotion(simAx, simAy, simAz, simGx, simGy, simGz, true, now);
-    this.handleStepDetected(stepLength, direction, now);
+  public injectSimulatedSample(ax: number = 0.5, ay: number = 1.8, az: number = 9.81, gx: number = 5.0, gy: number = 2.0, gz: number = 1.0) {
+    this.processDeviceMotion(ax, ay, az, gx, gy, gz, Date.now());
   }
 
   public setManualHeading(heading: number) {
     const norm = normalizeDegrees(heading);
-    this.headingFilter.reset(norm);
     this.headingData = {
       ...this.headingData,
       heading: norm,
@@ -437,31 +325,20 @@ export class PDREngine {
       latitude: lat,
       longitude: lng,
     };
-    this.recordPathPoint(lat, lng, Date.now(), this.mode, this.headingData.heading, 'FORWARD', 5);
+    this.recordPathPoint(lat, lng, Date.now(), this.mode, this.headingData.heading, 5);
     this.notify();
   }
 
-  public resetPathAndMetrics() {
-    this.stepMetrics = {
-      stepCount: 0,
-      lastStepTimestamp: 0,
-      cadence: 0,
-      currentStepLength: 0.7,
-      totalDistance: 0,
-      speedMps: 0,
-      speedKmh: 0,
-      isStationary: true,
-      motionVariance: 0,
-      walkDirection: 'FORWARD',
-      directionMode: this.stepMetrics.directionMode,
-      aiDisplacementMeters: 0,
-      aiHeadingDeltaDeg: 0,
+  public resetTracking() {
+    this.navigationMetrics = {
+      totalDistanceMeters: 0,
+      currentSpeedMps: 0,
+      currentSpeedKmh: 0,
+      lastDisplacementMeters: 0,
+      totalInferenceUpdates: 0,
+      lastUpdateTimestamp: 0,
     };
-    this.stepTimestamps = [];
     this.pathHistory = [];
-    this.stepDetector.reset();
-    this.gravityFilter.reset();
-    this.magnitudeLpf.reset();
     aiInertialEngine.reset();
     this.notify();
   }
@@ -479,9 +356,8 @@ export class PDREngine {
     timestamp: number,
     mode: TrackingMode,
     heading: number,
-    direction: WalkDirection = 'FORWARD',
     accuracy?: number,
-    stepIndex?: number
+    displacement?: number
   ) {
     this.pathHistory.push({
       lat,
@@ -489,9 +365,8 @@ export class PDREngine {
       timestamp,
       mode,
       heading,
-      direction,
       accuracy,
-      stepIndex,
+      displacement,
     });
 
     if (this.pathHistory.length > this.maxPathPoints) {
@@ -501,4 +376,4 @@ export class PDREngine {
 }
 
 // Global Singleton Instance
-export const pdrEngine = new PDREngine();
+export const pdrEngine = new TrackerEngine();

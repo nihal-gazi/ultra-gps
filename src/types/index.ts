@@ -1,5 +1,4 @@
-export type TrackingMode = 'GPS' | 'DEAD_RECKONING' | 'AI_TRANSFORMER' | 'SEARCHING_GPS' | 'CALIBRATING';
-export type WalkDirection = 'FORWARD' | 'BACKWARD';
+export type TrackingMode = 'GPS' | 'AI_TRANSFORMER' | 'SEARCHING_GPS';
 
 export interface Coordinates {
   latitude: number;
@@ -21,34 +20,32 @@ export interface HeadingData {
 
 export interface MotionSample {
   timestamp: number;
+  // Raw 6-DOF IMU
+  rawAx: number;
+  rawAy: number;
+  rawAz: number;
+  rawGx: number;
+  rawGy: number;
+  rawGz: number;
+  // Gaussian Smoothed 6-DOF IMU
   ax: number;
   ay: number;
   az: number;
+  gx: number;
+  gy: number;
+  gz: number;
   rawMagnitude: number;
   filteredMagnitude: number;
-  isPeak: boolean;
-  stepLength: number;
-  isStationary: boolean;
-  gx: number; // Gyro rotation rate X (deg/s)
-  gy: number; // Gyro rotation rate Y (deg/s)
-  gz: number; // Gyro rotation rate Z (deg/s)
-  gyroMagnitude: number; // Combined angular velocity magnitude (deg/s)
+  gyroMagnitude: number;
 }
 
-export interface StepMetrics {
-  stepCount: number;
-  lastStepTimestamp: number;
-  cadence: number; // steps per minute
-  currentStepLength: number; // in meters
-  totalDistance: number; // in meters
-  speedMps: number; // meters per second
-  speedKmh: number; // km/h
-  isStationary: boolean;
-  motionVariance: number;
-  walkDirection: WalkDirection;
-  directionMode: 'AUTO' | 'FORWARD' | 'BACKWARD';
-  aiDisplacementMeters?: number;
-  aiHeadingDeltaDeg?: number;
+export interface NavigationMetrics {
+  totalDistanceMeters: number;
+  currentSpeedMps: number;
+  currentSpeedKmh: number;
+  lastDisplacementMeters: number;
+  totalInferenceUpdates: number;
+  lastUpdateTimestamp: number;
 }
 
 export interface AIInferenceMetrics {
@@ -71,18 +68,13 @@ export interface PathPoint {
   timestamp: number;
   mode: TrackingMode;
   heading: number;
-  direction?: WalkDirection;
   accuracy?: number;
-  stepIndex?: number;
+  displacement?: number;
 }
 
-export interface CalibrationConfig {
-  weinbergK: number; // Weinberg constant K (typically 0.40 - 0.55)
-  peakThreshold: number; // Acceleration threshold (m/s^2) for peak detection
-  minStepIntervalMs: number; // Minimum ms between consecutive steps (e.g. 250ms -> max 4 steps/sec)
-  smoothingFactor: number; // Low pass filter factor alpha (0 - 1)
-  gyroWeight: number; // Gyroscope fusion weight in complementary filter (0.90 - 0.98)
-  stationaryVarianceThreshold: number; // Minimum variance below which device is stationary (ZUPT)
+export interface GaussianConfig {
+  kernelSize: number; // Gaussian window size (e.g. 7)
+  sigma: number; // Gaussian standard deviation (e.g. 1.2)
 }
 
 export interface SensorStatus {
