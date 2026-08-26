@@ -263,7 +263,13 @@ export class TrackerEngine {
    * Step 5: Plot ONNX odometry output displacement onto map
    */
   private handleOnnxOdometryUpdate(displacementMeters: number, speedMps: number, timestamp: number) {
-    if (displacementMeters <= 0.001) return;
+    if (displacementMeters <= 0.001) {
+      this.navigationMetrics.currentSpeedMps = 0;
+      this.navigationMetrics.currentSpeedKmh = 0;
+      this.navigationMetrics.lastDisplacementMeters = 0;
+      this.notify();
+      return;
+    }
 
     this.navigationMetrics.lastDisplacementMeters = Number(displacementMeters.toFixed(3));
     this.navigationMetrics.totalDistanceMeters += displacementMeters;

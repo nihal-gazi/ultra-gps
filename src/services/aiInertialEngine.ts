@@ -5,7 +5,7 @@
  * 1. Sensor data is recorded (6-DOF Accelerometer + Gyroscope + Heading)
  * 2. Sensor data is smoothened using Gaussian filtering
  * 3. Data is displayed via state subscribers
- * 4. Data is passed through ONNX MLP (WebGPU / WASM)
+ * 4. Zero-Velocity (ZUPT) Gating + ONNX MLP inference (WebGPU / WASM)
  * 5. Output displacement [dx, dy] is plotted onto the map
  */
 
@@ -24,6 +24,8 @@ export interface AIInferenceMetrics {
   instantaneousSpeedMps: number;
   instantaneousSpeedKmh: number;
   instantaneousTurnDeltaDeg: number;
+  isStationary: boolean;
+  motionVariance: number;
   modelName: string;
   errorMessage?: string;
 }
@@ -55,6 +57,8 @@ export class AIInertialEngine {
     instantaneousSpeedMps: 0,
     instantaneousSpeedKmh: 0,
     instantaneousTurnDeltaDeg: 0,
+    isStationary: true,
+    motionVariance: 0,
     modelName: 'IO-VNBD Inertial MLP (Dense 120 -> 256 -> 128 -> 64)',
   };
 
@@ -228,6 +232,45 @@ export class AIInertialEngine {
   ) {
     if (!this.session || this.imuBuffer.length < this.seqLen) return;
 
+    // Physical Zero-Velocity Detection (ZUPT Anti-Drift Gate)
+    let sumNorm = 0;
+    let sumSqNorm = 0;
+    let sumGyro = 0;
+    const n = this.imuBuffer.length;
+
+    for (let i = 0; i < n; i++) {
+      const [ax, ay, az, gz, gx, gy] = this.imuBuffer[i];
+      const norm = Math.sqrt(ax * ax + ay * ay + az * az);
+      const gyroNormDeg = Math.sqrt(gx * gx + gy * gy + gz * gz) * (180 / Math.PI);
+      sumNorm += norm;
+      sumSqNorm += norm * norm;
+      sumGyro += gyroNormDeg;
+    }
+
+    const meanNorm = sumNorm / n;
+    const accelVariance = Math.max(0, (sumSqNorm / n) - (meanNorm * meanNorm));
+    const avgGyroDeg = sumGyro / n;
+
+    // Device is static if dynamic acceleration variance is small and angular rates are near zero
+    const isStationary = accelVariance < 0.05 && avgGyroDeg < 1.8;
+
+    this.metrics.isStationary = isStationary;
+    this.metrics.motionVariance = Number(accelVariance.toFixed(4));
+
+    if (isStationary) {
+      // Hard physical zero-velocity clamp (Eliminates stationary drift completely!)
+      this.metrics.lastDisplacement = { dx: 0, dy: 0, magnitude: 0 };
+      this.metrics.instantaneousSpeedMps = 0;
+      this.metrics.instantaneousSpeedKmh = 0;
+      this.metrics.instantaneousTurnDeltaDeg = 0;
+      this.notify();
+
+      if (onInferenceOutput) {
+        onInferenceOutput(0, 0, 0);
+      }
+      return;
+    }
+
     const t0 = performance.now();
 
     try {
@@ -299,6 +342,8 @@ export class AIInertialEngine {
     this.metrics.instantaneousSpeedMps = 0;
     this.metrics.instantaneousSpeedKmh = 0;
     this.metrics.instantaneousTurnDeltaDeg = 0;
+    this.metrics.isStationary = true;
+    this.metrics.motionVariance = 0;
     this.metrics.totalInferences = 0;
     this.notify();
   }

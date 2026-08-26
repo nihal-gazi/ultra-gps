@@ -36,7 +36,7 @@ export function useLocationTracker() {
       setAiMetrics(newAiMetrics);
     });
 
-    // Auto-load ONNX Transformer Model with WebGPU / WASM execution provider
+    // Auto-load ONNX MLP Model with WebGPU / WASM execution provider
     aiInertialEngine.initializeModel();
 
     return () => {
@@ -90,23 +90,15 @@ export function useLocationTracker() {
     }
   }, []);
 
-  // Step 1: Record Sensor Streams (Hardware Accelerometer, Gyroscope, and Orientation)
+  // Step 1: Record Sensor Streams (Raw Accelerometer with Gravity, Gyroscope, and Orientation)
   useEffect(() => {
     const handleDeviceMotion = (event: DeviceMotionEvent) => {
       let ax = 0;
       let ay = 0;
       let az = 0;
 
+      // Prefer accelerationIncludingGravity to match physical IMU standard and dataset
       if (
-        event.acceleration &&
-        event.acceleration.x !== null &&
-        event.acceleration.y !== null &&
-        event.acceleration.z !== null
-      ) {
-        ax = event.acceleration.x;
-        ay = event.acceleration.y;
-        az = event.acceleration.z;
-      } else if (
         event.accelerationIncludingGravity &&
         event.accelerationIncludingGravity.x !== null &&
         event.accelerationIncludingGravity.y !== null &&
@@ -115,6 +107,15 @@ export function useLocationTracker() {
         ax = event.accelerationIncludingGravity.x;
         ay = event.accelerationIncludingGravity.y;
         az = event.accelerationIncludingGravity.z;
+      } else if (
+        event.acceleration &&
+        event.acceleration.x !== null &&
+        event.acceleration.y !== null &&
+        event.acceleration.z !== null
+      ) {
+        ax = event.acceleration.x;
+        ay = event.acceleration.y;
+        az = event.acceleration.z + 9.81; // synthesize 1G vertical gravity vector
       } else {
         return;
       }
@@ -393,7 +394,7 @@ export function useLocationTracker() {
         simPhaseRef.current += 0.15;
         const phase = simPhaseRef.current;
 
-        // Realistic IMU accelerations
+        // Realistic IMU accelerations with gravity
         const ax = Math.sin(phase * 0.5) * 0.6 + (Math.random() - 0.5) * 0.2;
         const ay = Math.sin(phase) * 2.4 + Math.cos(phase * 2) * 0.6 + (Math.random() - 0.5) * 0.2;
         const az = 9.81 + Math.cos(phase) * 1.8 + (Math.random() - 0.5) * 0.2;

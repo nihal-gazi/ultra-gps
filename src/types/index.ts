@@ -60,6 +60,8 @@ export interface AIInferenceMetrics {
   instantaneousSpeedMps: number;
   instantaneousSpeedKmh: number;
   instantaneousTurnDeltaDeg: number;
+  isStationary: boolean;
+  motionVariance: number;
   modelName: string;
   errorMessage?: string;
 }

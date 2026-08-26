@@ -1,6 +1,6 @@
 import React from 'react';
 import type { AIInferenceMetrics } from '../types';
-import { Cpu, Zap, Activity, Navigation, Info, CheckCircle2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Cpu, Zap, Activity, Navigation, Info, CheckCircle2, AlertTriangle, RefreshCw, Lock } from 'lucide-react';
 
 interface AIModelStatusPanelProps {
   aiMetrics: AIInferenceMetrics;
@@ -14,6 +14,7 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
   const isWebGpu = aiMetrics.executionProvider === 'webgpu';
   const isWasm = aiMetrics.executionProvider === 'wasm';
   const isReady = aiMetrics.isLoaded;
+  const isStatic = aiMetrics.isStationary;
 
   return (
     <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col gap-2.5 font-mono text-xs shadow-xl">
@@ -25,6 +26,14 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* ZUPT Stationary Lock Badge */}
+          {isStatic && (
+            <div className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              <Lock className="w-2.5 h-2.5" />
+              <span>ZUPT STATIC</span>
+            </div>
+          )}
+
           {/* Execution Provider Badge */}
           <div
             className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
@@ -87,10 +96,10 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
             <span>Inst Vector</span>
           </div>
           <div className="font-bold text-slate-100 text-xs mt-0.5">
-            {aiMetrics.lastDisplacement.magnitude.toFixed(2)} m
+            {isStatic ? '0.00 m' : `${aiMetrics.lastDisplacement.magnitude.toFixed(2)} m`}
           </div>
           <div className="text-[9px] text-slate-500 truncate">
-            dX: {aiMetrics.lastDisplacement.dx.toFixed(2)} | dY: {aiMetrics.lastDisplacement.dy.toFixed(2)}
+            {isStatic ? 'Zero Drift Lock' : `dX: ${aiMetrics.lastDisplacement.dx.toFixed(2)} | dY: ${aiMetrics.lastDisplacement.dy.toFixed(2)}`}
           </div>
         </div>
 
@@ -101,10 +110,10 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
             <span>Inst Speed</span>
           </div>
           <div className="font-bold text-slate-100 text-xs mt-0.5">
-            {aiMetrics.instantaneousSpeedKmh.toFixed(1)} km/h
+            {isStatic ? '0.0 km/h' : `${aiMetrics.instantaneousSpeedKmh.toFixed(1)} km/h`}
           </div>
           <div className="text-[9px] text-emerald-400/80">
-            {aiMetrics.instantaneousSpeedMps.toFixed(2)} m/s (Instant)
+            {isStatic ? 'Static (0.00 m/s)' : `${aiMetrics.instantaneousSpeedMps.toFixed(2)} m/s (Instant)`}
           </div>
         </div>
 
@@ -115,10 +124,10 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
             <span>Inst Turn Delta</span>
           </div>
           <div className="font-bold text-slate-100 text-xs mt-0.5">
-            {aiMetrics.instantaneousTurnDeltaDeg.toFixed(1)}°
+            {isStatic ? '0.0°' : `${aiMetrics.instantaneousTurnDeltaDeg.toFixed(1)}°`}
           </div>
           <div className="text-[9px] text-slate-500">
-            dTheta (Instant)
+            {isStatic ? 'Stationary' : 'dTheta (Instant)'}
           </div>
         </div>
 
