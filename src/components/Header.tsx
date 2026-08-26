@@ -34,7 +34,7 @@ export const Header: React.FC<HeaderProps> = ({
             </span>
           </h1>
           <p className="text-xs text-slate-400 font-mono m-0">
-            Gaussian Filtered 6-DOF &bull; ONNX Transformer &bull; Edge Neural Odometry
+            Gaussian Filtered 6-DOF &bull; ONNX Inertial MLP &bull; Instantaneous Odometry
           </p>
         </div>
       </div>

@@ -56,8 +56,10 @@ export interface AIInferenceMetrics {
   avgLatencyMs: number;
   totalInferences: number;
   lastDisplacement: { dx: number; dy: number; magnitude: number };
-  predictedSpeedMps: number;
-  predictedHeadingDeltaDeg: number;
+  // Instantaneous kinematic values directly from latest inference
+  instantaneousSpeedMps: number;
+  instantaneousSpeedKmh: number;
+  instantaneousTurnDeltaDeg: number;
   modelName: string;
   errorMessage?: string;
 }

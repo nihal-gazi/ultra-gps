@@ -5,7 +5,7 @@
  * 1. Sensor data is recorded (6-DOF Accelerometer + Gyroscope + Heading)
  * 2. Sensor data is smoothened using Gaussian filtering
  * 3. Data is displayed via state subscribers
- * 4. Data is passed through ONNX Transformer (WebGPU / WASM)
+ * 4. Data is passed through ONNX MLP (WebGPU / WASM)
  * 5. Output displacement [dx, dy] is plotted onto the map
  */
 
@@ -20,8 +20,10 @@ export interface AIInferenceMetrics {
   avgLatencyMs: number;
   totalInferences: number;
   lastDisplacement: { dx: number; dy: number; magnitude: number };
-  predictedSpeedMps: number;
-  predictedHeadingDeltaDeg: number;
+  // Instantaneous kinematic values (non-averaged)
+  instantaneousSpeedMps: number;
+  instantaneousSpeedKmh: number;
+  instantaneousTurnDeltaDeg: number;
   modelName: string;
   errorMessage?: string;
 }
@@ -50,9 +52,10 @@ export class AIInertialEngine {
     avgLatencyMs: 0,
     totalInferences: 0,
     lastDisplacement: { dx: 0, dy: 0, magnitude: 0 },
-    predictedSpeedMps: 0,
-    predictedHeadingDeltaDeg: 0,
-    modelName: 'IO-VNBD Transformer (MHSA, d=64, 4-Head)',
+    instantaneousSpeedMps: 0,
+    instantaneousSpeedKmh: 0,
+    instantaneousTurnDeltaDeg: 0,
+    modelName: 'IO-VNBD Inertial MLP (Dense 120 -> 256 -> 128 -> 64)',
   };
 
   private latencies: number[] = [];
@@ -83,9 +86,9 @@ export class AIInertialEngine {
   }
 
   /**
-   * Initializes the ONNX Transformer session from a monolithic binary buffer
+   * Initializes the ONNX MLP session from a monolithic binary buffer
    */
-  public async initializeModel(modelUrl: string = '/models/inertial_transformer.onnx'): Promise<boolean> {
+  public async initializeModel(modelUrl: string = '/models/inertial_mlp.onnx'): Promise<boolean> {
     if (this.session) return true;
     if (this.isInitializing) return false;
 
@@ -153,7 +156,7 @@ export class AIInertialEngine {
    * Pipeline Steps 1, 2, 4:
    * 1. Record raw sensor data
    * 2. Gaussian smoothing of 6-DOF IMU channels
-   * 4. Feed Gaussian-smoothed sequence window into ONNX Transformer
+   * 4. Feed Gaussian-smoothed sequence window into ONNX MLP
    */
   public processSensorSample(
     rawAx: number,
@@ -163,7 +166,7 @@ export class AIInertialEngine {
     rawGyDeg: number,
     rawGzDeg: number,
     timestamp: number = Date.now(),
-    onInferenceOutput?: (displacementMeters: number, speedMps: number, headingDeltaDeg: number) => void
+    onInferenceOutput?: (displacementMeters: number, instantaneousSpeedMps: number, instantaneousHeadingDeltaDeg: number) => void
   ): {
     smoothedAx: number;
     smoothedAy: number;
@@ -221,7 +224,7 @@ export class AIInertialEngine {
   }
 
   private async runInference(
-    onInferenceOutput?: (displacementMeters: number, speedMps: number, headingDeltaDeg: number) => void
+    onInferenceOutput?: (displacementMeters: number, instantaneousSpeedMps: number, instantaneousHeadingDeltaDeg: number) => void
   ) {
     if (!this.session || this.imuBuffer.length < this.seqLen) return;
 
@@ -242,19 +245,23 @@ export class AIInertialEngine {
       const results = await this.session.run(feeds);
       const latency = performance.now() - t0;
 
-      // Extract output tensor [dx, dy, speed, delta_theta]
+      // Extract output tensor [dx, dy, instantaneous_speed, instantaneous_delta_theta]
       const outputTensor = results.odometry_output || Object.values(results)[0];
       const outData = outputTensor.data as Float32Array;
 
       const dx = outData[0] || 0;
       const dy = outData[1] || 0;
-      const speed = Math.max(0, outData[2] || 0);
-      const deltaThetaRad = outData[3] || 0;
-      const deltaThetaDeg = deltaThetaRad * (180 / Math.PI);
+      // Pure instantaneous speed (m/s)
+      const instSpeedMps = Math.max(0, outData[2] || 0);
+      const instSpeedKmh = instSpeedMps * 3.6;
+
+      // Pure instantaneous turn delta (deg)
+      const instDeltaThetaRad = outData[3] || 0;
+      const instDeltaThetaDeg = instDeltaThetaRad * (180 / Math.PI);
 
       const magnitude = Math.sqrt(dx * dx + dy * dy);
 
-      // Latency stats
+      // Latency tracking
       this.latencies.push(latency);
       if (this.latencies.length > 50) this.latencies.shift();
       const avgLatency = this.latencies.reduce((a, b) => a + b, 0) / this.latencies.length;
@@ -267,14 +274,16 @@ export class AIInertialEngine {
         dy: Number(dy.toFixed(3)),
         magnitude: Number(magnitude.toFixed(3)),
       };
-      this.metrics.predictedSpeedMps = Number(speed.toFixed(2));
-      this.metrics.predictedHeadingDeltaDeg = Number(deltaThetaDeg.toFixed(2));
+      // Pure instantaneous updates (no moving average)
+      this.metrics.instantaneousSpeedMps = Number(instSpeedMps.toFixed(2));
+      this.metrics.instantaneousSpeedKmh = Number(instSpeedKmh.toFixed(1));
+      this.metrics.instantaneousTurnDeltaDeg = Number(instDeltaThetaDeg.toFixed(2));
 
       this.notify();
 
-      // Step 5 trigger: pass output to location engine to plot
+      // Step 5 trigger: pass instantaneous output to location engine
       if (onInferenceOutput) {
-        onInferenceOutput(magnitude, speed, deltaThetaDeg);
+        onInferenceOutput(magnitude, instSpeedMps, instDeltaThetaDeg);
       }
     } catch (inferErr) {
       console.warn('[AI Engine] Inference notice:', inferErr);
@@ -287,7 +296,9 @@ export class AIInertialEngine {
     this.lastInferenceTime = 0;
     this.latencies = [];
     this.metrics.lastDisplacement = { dx: 0, dy: 0, magnitude: 0 };
-    this.metrics.predictedSpeedMps = 0;
+    this.metrics.instantaneousSpeedMps = 0;
+    this.metrics.instantaneousSpeedKmh = 0;
+    this.metrics.instantaneousTurnDeltaDeg = 0;
     this.metrics.totalInferences = 0;
     this.notify();
   }

@@ -21,7 +21,7 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
       <div className="flex items-center justify-between border-b border-slate-800 pb-2">
         <div className="flex items-center gap-1.5 font-bold uppercase text-slate-200">
           <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Edge Neural Odometry (IO-VNBD)</span>
+          <span>Edge Inertial MLP (IO-VNBD Exp 2)</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -52,7 +52,7 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
           <button
             onClick={onOpenArchitecture}
             className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-            title="Inspect Transformer Architecture & Benchmark Metrics"
+            title="Inspect MLP Architecture & Benchmark Metrics"
           >
             <Info className="w-3.5 h-3.5" />
           </button>
@@ -72,7 +72,7 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
 
         <div className="flex items-center gap-2 text-slate-300 shrink-0 font-bold">
           <span className="text-[10px] text-slate-500">LATENCY:</span>
-          <span className={aiMetrics.lastLatencyMs < 10 ? 'text-emerald-400' : 'text-sky-400'}>
+          <span className={aiMetrics.lastLatencyMs < 5 ? 'text-emerald-400' : 'text-sky-400'}>
             {aiMetrics.lastLatencyMs.toFixed(1)} ms
           </span>
         </div>
@@ -80,11 +80,11 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
 
       {/* 4-Metric Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {/* Metric 1: 2D Displacement */}
+        {/* Metric 1: Instantaneous 2D Displacement */}
         <div className="p-2 bg-slate-950 rounded-lg border border-slate-800/80">
           <div className="flex items-center gap-1 text-[10px] text-slate-500 uppercase">
             <Activity className="w-3 h-3 text-indigo-400" />
-            <span>Neural Vector</span>
+            <span>Inst Vector</span>
           </div>
           <div className="font-bold text-slate-100 text-xs mt-0.5">
             {aiMetrics.lastDisplacement.magnitude.toFixed(2)} m
@@ -94,31 +94,31 @@ export const AIModelStatusPanel: React.FC<AIModelStatusPanelProps> = ({
           </div>
         </div>
 
-        {/* Metric 2: Predicted Speed */}
+        {/* Metric 2: Instantaneous Speed (Strictly Non-Averaged) */}
         <div className="p-2 bg-slate-950 rounded-lg border border-slate-800/80">
           <div className="flex items-center gap-1 text-[10px] text-slate-500 uppercase">
             <Zap className="w-3 h-3 text-emerald-400" />
-            <span>Inferred Speed</span>
+            <span>Inst Speed</span>
           </div>
           <div className="font-bold text-slate-100 text-xs mt-0.5">
-            {(aiMetrics.predictedSpeedMps * 3.6).toFixed(1)} km/h
+            {aiMetrics.instantaneousSpeedKmh.toFixed(1)} km/h
           </div>
           <div className="text-[9px] text-emerald-400/80">
-            {aiMetrics.predictedSpeedMps.toFixed(2)} m/s
+            {aiMetrics.instantaneousSpeedMps.toFixed(2)} m/s (Instant)
           </div>
         </div>
 
-        {/* Metric 3: Inferred Delta Heading */}
+        {/* Metric 3: Instantaneous Turn Delta (Strictly Non-Averaged) */}
         <div className="p-2 bg-slate-950 rounded-lg border border-slate-800/80">
           <div className="flex items-center gap-1 text-[10px] text-slate-500 uppercase">
             <Navigation className="w-3 h-3 text-sky-400" />
-            <span>Turn Delta</span>
+            <span>Inst Turn Delta</span>
           </div>
           <div className="font-bold text-slate-100 text-xs mt-0.5">
-            {aiMetrics.predictedHeadingDeltaDeg.toFixed(1)}°
+            {aiMetrics.instantaneousTurnDeltaDeg.toFixed(1)}°
           </div>
           <div className="text-[9px] text-slate-500">
-            dTheta/Window
+            dTheta (Instant)
           </div>
         </div>
 
