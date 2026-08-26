@@ -1,4 +1,4 @@
-export type TrackingMode = 'GPS' | 'DEAD_RECKONING' | 'SEARCHING_GPS' | 'CALIBRATING';
+export type TrackingMode = 'GPS' | 'DEAD_RECKONING' | 'AI_TRANSFORMER' | 'SEARCHING_GPS' | 'CALIBRATING';
 export type WalkDirection = 'FORWARD' | 'BACKWARD';
 
 export interface Coordinates {
@@ -47,6 +47,22 @@ export interface StepMetrics {
   motionVariance: number;
   walkDirection: WalkDirection;
   directionMode: 'AUTO' | 'FORWARD' | 'BACKWARD';
+  aiDisplacementMeters?: number;
+  aiHeadingDeltaDeg?: number;
+}
+
+export interface AIInferenceMetrics {
+  isLoaded: boolean;
+  isLoading: boolean;
+  executionProvider: 'webgpu' | 'wasm' | 'cpu' | 'initializing' | 'failed';
+  lastLatencyMs: number;
+  avgLatencyMs: number;
+  totalInferences: number;
+  lastDisplacement: { dx: number; dy: number; magnitude: number };
+  predictedSpeedMps: number;
+  predictedHeadingDeltaDeg: number;
+  modelName: string;
+  errorMessage?: string;
 }
 
 export interface PathPoint {

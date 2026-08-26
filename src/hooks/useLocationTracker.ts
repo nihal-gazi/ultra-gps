@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { pdrEngine } from '../services/pdrEngine';
+import { aiInertialEngine } from '../services/aiInertialEngine';
 import type { PDRState } from '../services/pdrEngine';
-import type { SensorStatus, TrackingMode, CalibrationConfig, WalkDirection } from '../types';
+import type { SensorStatus, TrackingMode, CalibrationConfig, WalkDirection, AIInferenceMetrics } from '../types';
 
 export function useLocationTracker() {
   const [pdrState, setPdrState] = useState<PDRState>(() => pdrEngine.getState());
+  const [aiMetrics, setAiMetrics] = useState<AIInferenceMetrics>(() => aiInertialEngine.getMetrics());
   const [gpsEnabled, setGpsEnabled] = useState<boolean>(true);
   const [sensorStatus, setSensorStatus] = useState<SensorStatus>({
     gpsAvailable: 'geolocation' in navigator,
@@ -25,12 +27,22 @@ export function useLocationTracker() {
   const motionCountRef = useRef<number>(0);
   const hasAbsoluteOrientationRef = useRef<boolean>(false);
 
-  // Subscribe to PDR Engine state updates
+  // Subscribe to PDR Engine & AI Engine state updates
   useEffect(() => {
-    const unsubscribe = pdrEngine.subscribe((newState) => {
+    const unsubPdr = pdrEngine.subscribe((newState) => {
       setPdrState(newState);
     });
-    return () => unsubscribe();
+    const unsubAi = aiInertialEngine.subscribe((newAiMetrics) => {
+      setAiMetrics(newAiMetrics);
+    });
+
+    // Auto-load ONNX Transformer Model with WebGPU / WASM execution provider
+    aiInertialEngine.initializeModel();
+
+    return () => {
+      unsubPdr();
+      unsubAi();
+    };
   }, []);
 
   // Request Device Sensor Permissions (iOS 13+ & modern mobile browsers)
@@ -300,7 +312,7 @@ export function useLocationTracker() {
       setSensorStatus((prev) => ({
         ...prev,
         gpsActive: false,
-        gpsStatusText: 'GPS Disabled (Using IMU Dead Reckoning)',
+        gpsStatusText: 'GPS Disabled (Using Neural Dead Reckoning)',
       }));
       return;
     }
@@ -334,7 +346,7 @@ export function useLocationTracker() {
           setSensorStatus((prev) => ({
             ...prev,
             gpsActive: false,
-            gpsStatusText: `GPS lost (${err.message}) - Dead Reckoning active`,
+            gpsStatusText: `GPS lost (${err.message}) - Neural Dead Reckoning active`,
           }));
         },
         {
@@ -392,7 +404,7 @@ export function useLocationTracker() {
 
   const setMode = useCallback((mode: TrackingMode) => {
     pdrEngine.setMode(mode);
-    if (mode === 'DEAD_RECKONING') {
+    if (mode === 'DEAD_RECKONING' || mode === 'AI_TRANSFORMER') {
       setGpsEnabled(false);
     } else if (mode === 'GPS') {
       setGpsEnabled(true);
@@ -427,9 +439,9 @@ export function useLocationTracker() {
         const az = 9.81 + Math.cos(phase) * 1.6 + (Math.random() - 0.5) * 0.2;
 
         // Realistic gait angular velocities (Pitch, Roll, Yaw rates in deg/s)
-        const gx = Math.sin(phase) * 14.5 + (Math.random() - 0.5) * 2.0;   // Pitch oscillation
-        const gy = Math.cos(phase * 0.5) * 8.2 + (Math.random() - 0.5) * 1.5; // Pelvic sway / roll
-        const gz = Math.sin(phase * 0.5) * 5.0 + (Math.random() - 0.5) * 1.0; // Torso yaw rate
+        const gx = Math.sin(phase) * 14.5 + (Math.random() - 0.5) * 2.0;
+        const gy = Math.cos(phase * 0.5) * 8.2 + (Math.random() - 0.5) * 1.5;
+        const gz = Math.sin(phase * 0.5) * 5.0 + (Math.random() - 0.5) * 1.0;
 
         pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, true, Date.now());
       }, 25);
@@ -463,6 +475,7 @@ export function useLocationTracker() {
 
   return {
     state: pdrState,
+    aiMetrics,
     gpsEnabled,
     sensorStatus,
     toggleGps,

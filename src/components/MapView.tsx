@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { Coordinates, PathPoint, TrackingMode } from '../types';
-import { Crosshair, MapPin, Navigation, Layers, Globe, Map as MapIcon, Plus, Minus } from 'lucide-react';
+import { Crosshair, MapPin, Navigation, Layers, Globe, Map as MapIcon, Plus, Minus, Cpu } from 'lucide-react';
 
 export type MapLayerType = 'satellite' | 'street' | 'dark';
 
@@ -32,6 +32,7 @@ export const MapView: React.FC<MapViewProps> = ({
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const gpsPolylineRef = useRef<L.Polyline | null>(null);
   const drPolylineRef = useRef<L.Polyline | null>(null);
+  const aiPolylineRef = useRef<L.Polyline | null>(null);
   const autoFollowRef = useRef<boolean>(true);
   const initialCenteredRef = useRef<boolean>(false);
   const prevModeRef = useRef<TrackingMode>(mode);
@@ -47,7 +48,7 @@ export const MapView: React.FC<MapViewProps> = ({
           options: {
             maxZoom: 26,
             maxNativeZoom: 19,
-            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, GIS Community',
+            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
           },
         };
       case 'dark':
@@ -143,9 +144,14 @@ export const MapView: React.FC<MapViewProps> = ({
 
   // Custom Direction Marker with smooth CSS rotation element
   const createDirectionIcon = (currentMode: TrackingMode) => {
+    const isAi = currentMode === 'AI_TRANSFORMER';
     const isDr = currentMode === 'DEAD_RECKONING';
-    const mainColor = isDr ? '#f59e0b' : '#38bdf8';
-    const pulseColor = isDr ? 'rgba(245, 158, 11, 0.35)' : 'rgba(56, 189, 248, 0.35)';
+    const mainColor = isAi ? '#818cf8' : isDr ? '#f59e0b' : '#38bdf8';
+    const pulseColor = isAi
+      ? 'rgba(129, 140, 248, 0.45)'
+      : isDr
+      ? 'rgba(245, 158, 11, 0.35)'
+      : 'rgba(56, 189, 248, 0.35)';
 
     return L.divIcon({
       className: 'custom-location-marker',
@@ -231,22 +237,24 @@ export const MapView: React.FC<MapViewProps> = ({
     } else {
       markerRef.current.setLatLng(latLng);
 
-      // Re-create icon ONLY if mode changes (GPS <-> DR)
+      // Re-create icon ONLY if mode changes
       if (prevModeRef.current !== mode) {
         markerRef.current.setIcon(createDirectionIcon(mode));
         prevModeRef.current = mode;
       }
     }
 
-    // Direct Smooth DOM CSS Transform rotation (Rock-solid, zero visual flicker!)
+    // Direct Smooth DOM CSS Transform rotation
     const rotators = document.querySelectorAll('.location-heading-rotator');
     rotators.forEach((el) => {
       (el as HTMLElement).style.transform = `rotate(${heading}deg)`;
     });
 
     // Accuracy Circle update
-    const accuracy = location.accuracy ?? (mode === 'DEAD_RECKONING' ? 8 : 10);
-    const circleColor = mode === 'DEAD_RECKONING' ? '#f59e0b' : '#38bdf8';
+    const isAi = mode === 'AI_TRANSFORMER';
+    const isDr = mode === 'DEAD_RECKONING';
+    const accuracy = location.accuracy ?? (isAi ? 6 : isDr ? 8 : 10);
+    const circleColor = isAi ? '#818cf8' : isDr ? '#f59e0b' : '#38bdf8';
 
     if (!accuracyCircleRef.current) {
       accuracyCircleRef.current = L.circle(latLng, {
@@ -270,22 +278,26 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   }, [location.latitude, location.longitude, heading, mode, location.accuracy, hasReceivedFix]);
 
-  // Update Path Trails
+  // Update Path Trails (GPS vs AI Transformer vs Kinematic DR)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
     const gpsPoints: L.LatLngTuple[] = [];
+    const aiPoints: L.LatLngTuple[] = [];
     const drPoints: L.LatLngTuple[] = [];
 
     path.forEach((pt) => {
       if (pt.mode === 'GPS') {
         gpsPoints.push([pt.lat, pt.lng]);
+      } else if (pt.mode === 'AI_TRANSFORMER') {
+        aiPoints.push([pt.lat, pt.lng]);
       } else {
         drPoints.push([pt.lat, pt.lng]);
       }
     });
 
+    // GPS Polyline (Sky Blue)
     if (!gpsPolylineRef.current) {
       gpsPolylineRef.current = L.polyline(gpsPoints, {
         color: '#38bdf8',
@@ -297,12 +309,26 @@ export const MapView: React.FC<MapViewProps> = ({
       gpsPolylineRef.current.setLatLngs(gpsPoints);
     }
 
+    // AI Transformer Polyline (Vibrant Indigo)
+    if (!aiPolylineRef.current) {
+      aiPolylineRef.current = L.polyline(aiPoints, {
+        color: '#818cf8',
+        weight: 4.5,
+        opacity: 0.95,
+        dashArray: '6, 6',
+        smoothFactor: 1,
+      }).addTo(map);
+    } else {
+      aiPolylineRef.current.setLatLngs(aiPoints);
+    }
+
+    // Kinematic DR Polyline (Amber)
     if (!drPolylineRef.current) {
       drPolylineRef.current = L.polyline(drPoints, {
         color: '#f59e0b',
-        weight: 4.5,
-        opacity: 0.95,
-        dashArray: '7, 7',
+        weight: 4.0,
+        opacity: 0.9,
+        dashArray: '4, 8',
         smoothFactor: 1,
       }).addTo(map);
     } else {
@@ -422,7 +448,7 @@ export const MapView: React.FC<MapViewProps> = ({
         </div>
       </div>
 
-      {/* Bottom Overlay: Zoom Level & Legend */}
+      {/* Bottom Overlay: Zoom Level & Multi-Track Legend */}
       <div className="absolute bottom-6 left-4 z-500 bg-slate-900/90 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-300 backdrop-blur shadow-xl flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-1.5 text-sky-400 font-bold">
           <span>ZOOM:</span>
@@ -431,11 +457,18 @@ export const MapView: React.FC<MapViewProps> = ({
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-3 h-1 bg-sky-400 rounded-full inline-block"></span>
-          <span>GPS Track</span>
+          <span>GPS Fix</span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 text-indigo-300 font-semibold">
+          <span className="w-3 h-1 bg-indigo-400 rounded-full inline-block border-b border-dashed border-indigo-200"></span>
+          <span className="flex items-center gap-1">
+            <Cpu className="w-3 h-3 text-indigo-400" />
+            <span>AI Transformer Track</span>
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 text-amber-400">
           <span className="w-3 h-1 bg-amber-500 rounded-full inline-block border-b border-dashed border-amber-300"></span>
-          <span>IMU Dead Reckoning</span>
+          <span>Kinematic DR</span>
         </div>
         <div className="hidden md:flex items-center gap-1 text-slate-500">
           <MapPin className="w-3.5 h-3.5 text-slate-400" />

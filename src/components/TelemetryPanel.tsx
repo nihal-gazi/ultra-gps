@@ -1,8 +1,7 @@
 import React from 'react';
-import type { Coordinates, HeadingData, StepMetrics, TrackingMode, SensorStatus } from '../types';
+import type { Coordinates, HeadingData, StepMetrics, TrackingMode, SensorStatus, AIInferenceMetrics } from '../types';
 import {
   Compass,
-  Footprints,
   Gauge,
   MapPin,
   Radio,
@@ -12,6 +11,7 @@ import {
   ArrowUp,
   ArrowDown,
   Pause,
+  Zap,
 } from 'lucide-react';
 
 interface TelemetryPanelProps {
@@ -20,6 +20,7 @@ interface TelemetryPanelProps {
   headingData: HeadingData;
   stepMetrics: StepMetrics;
   sensorStatus: SensorStatus;
+  aiMetrics?: AIInferenceMetrics;
   gpsEnabled: boolean;
   onToggleGps: () => void;
   onRequestPermissions: () => void;
@@ -39,13 +40,14 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
   headingData,
   stepMetrics,
   sensorStatus,
+  aiMetrics,
   gpsEnabled,
   onToggleGps,
   onRequestPermissions,
   onLocateNow,
   onSetDirectionMode,
 }) => {
-  const isDr = mode === 'DEAD_RECKONING';
+  const isDr = mode === 'DEAD_RECKONING' || mode === 'AI_TRANSFORMER';
   const cardinal = getCardinalDirection(headingData.heading);
 
   const cycleDirectionMode = () => {
@@ -63,7 +65,9 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           {/* Mode Pill */}
           <div
             className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-semibold tracking-wide uppercase ${
-              isDr
+              mode === 'AI_TRANSFORMER'
+                ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/40'
+                : isDr
                 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
                 : mode === 'GPS'
                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
@@ -72,10 +76,22 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           >
             <span
               className={`w-2 h-2 rounded-full animate-pulse ${
-                isDr ? 'bg-amber-400' : mode === 'GPS' ? 'bg-emerald-400' : 'bg-sky-400'
+                mode === 'AI_TRANSFORMER'
+                  ? 'bg-indigo-400'
+                  : isDr
+                  ? 'bg-amber-400'
+                  : mode === 'GPS'
+                  ? 'bg-emerald-400'
+                  : 'bg-sky-400'
               }`}
             />
-            {isDr ? 'IMU DEAD RECKONING' : mode === 'GPS' ? 'GPS ACTIVE' : 'ACQUIRING POSITION'}
+            {mode === 'AI_TRANSFORMER'
+              ? 'AI TRANSFORMER (WEBGPU)'
+              : isDr
+              ? 'NEURAL DEAD RECKONING'
+              : mode === 'GPS'
+              ? 'GPS ACTIVE'
+              : 'ACQUIRING POSITION'}
           </div>
 
           {/* Motion State Pill (ZUPT) */}
@@ -122,11 +138,11 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium transition-all flex items-center gap-1.5 border ${
               gpsEnabled
                 ? 'bg-blue-600/30 border-blue-500/50 text-blue-300 hover:bg-blue-600/40'
-                : 'bg-amber-600/30 border-amber-500/50 text-amber-300 hover:bg-amber-600/40'
+                : 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300 hover:bg-indigo-600/40'
             }`}
           >
             <Radio className="w-3.5 h-3.5" />
-            {gpsEnabled ? 'GPS: ON' : 'GPS: OFF (IMU ACTIVE)'}
+            {gpsEnabled ? 'GPS: ON' : 'GPS: OFF (AI ACTIVE)'}
           </button>
 
           {!sensorStatus.permissionGranted && (
@@ -204,20 +220,22 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           </div>
         </div>
 
-        {/* Metric: Steps & Weinberg Stride */}
+        {/* Metric: AI Neural Displacement / Stride */}
         <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1 font-mono uppercase">
-            <Footprints className="w-3.5 h-3.5 text-amber-400" />
-            <span>Steps / Stride</span>
+            <Zap className="w-3.5 h-3.5 text-indigo-400" />
+            <span>AI Neural Stride</span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg text-slate-100 font-bold">
               {stepMetrics.stepCount}
             </span>
-            <span className="font-mono text-xs text-slate-400">steps</span>
+            <span className="font-mono text-xs text-slate-400">updates</span>
           </div>
-          <div className="text-[10px] font-mono text-amber-400/80">
-            SL: {stepMetrics.currentStepLength.toFixed(2)} m (Weinberg)
+          <div className="text-[10px] font-mono text-indigo-400/80 truncate">
+            {aiMetrics?.isLoaded
+              ? `AI Vec: ${aiMetrics.lastDisplacement.magnitude.toFixed(2)}m (IO-VNBD)`
+              : `SL: ${stepMetrics.currentStepLength.toFixed(2)}m (Weinberg)`}
           </div>
         </div>
 

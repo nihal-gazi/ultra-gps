@@ -1,20 +1,22 @@
 import React from 'react';
-import { Compass, BookOpen, Sliders, ShieldCheck, Navigation } from 'lucide-react';
+import { Compass, Cpu, Sliders, ShieldCheck, Navigation } from 'lucide-react';
 
 interface HeaderProps {
   onOpenCalibration: () => void;
-  onOpenEquations: () => void;
+  onOpenArchitecture: () => void;
   onRequestPermissions: () => void;
   onLocateNow?: () => void;
   hasPermissions: boolean;
+  isAiLoaded?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenCalibration,
-  onOpenEquations,
+  onOpenArchitecture,
   onRequestPermissions,
   onLocateNow,
   hasPermissions,
+  isAiLoaded = false,
 }) => {
   return (
     <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-900/95 border-b border-slate-800 backdrop-blur text-slate-100 font-sans">
@@ -25,12 +27,16 @@ export const Header: React.FC<HeaderProps> = ({
         <div>
           <h1 className="text-base font-mono font-bold tracking-tight text-white flex items-center gap-2 m-0">
             <span>ultra-GPS</span>
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-              PDR v1.0
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${
+              isAiLoaded
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+            }`}>
+              {isAiLoaded ? 'IO-VNBD WebGPU AI' : 'Transformer Initializing...'}
             </span>
           </h1>
           <p className="text-xs text-slate-400 font-mono m-0">
-            OpenStreetMap &amp; IMU Sensor Fusion Navigation
+            Edge WebGPU Inertial Odometry &amp; Deep Satellite View
           </p>
         </div>
       </div>
@@ -48,12 +54,12 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         <button
-          onClick={onOpenEquations}
-          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors"
-          title="View Mathematical Sensor Fusion Equations"
+          onClick={onOpenArchitecture}
+          className="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors"
+          title="Inspect Inertial Odometry Transformer Architecture &amp; Benchmarks"
         >
-          <BookOpen className="w-3.5 h-3.5 text-sky-400" />
-          <span>EQUATIONS</span>
+          <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+          <span>AI ARCHITECTURE</span>
         </button>
 
         <button

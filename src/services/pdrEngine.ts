@@ -1,6 +1,6 @@
 /**
- * Pedestrian Dead Reckoning (PDR) Engine
- * Integrates Accelerometer, Gyroscope, Compass, Geodesy, ZUPT Anti-Drift, and Smooth Orientation
+ * Pedestrian Dead Reckoning (PDR) & Neural Inertial Engine.
+ * Integrates Edge Transformer Inference (ONNX WebGPU), Accelerometer, Gyroscope, Geodesy, and ZUPT Gating.
  */
 
 import type {
@@ -16,6 +16,7 @@ import type {
 import { calculateDestinationPoint, calculateHaversineDistance } from '../utils/geodesy';
 import { OrientationInvariantGravityFilter, LowPassFilter, StepDetector } from '../utils/filter';
 import { SmoothHeadingFilter, computeRobustCompassHeading, normalizeDegrees } from '../utils/orientation';
+import { aiInertialEngine } from './aiInertialEngine';
 
 export interface PDRState {
   mode: TrackingMode;
@@ -26,6 +27,7 @@ export interface PDRState {
   pathHistory: PathPoint[];
   config: CalibrationConfig;
   hasReceivedFix: boolean;
+  isAiEnabled: boolean;
 }
 
 export type PDRStateListener = (state: PDRState) => void;
@@ -34,6 +36,7 @@ export class PDREngine {
   private mode: TrackingMode = 'SEARCHING_GPS';
   private hasReceivedFix: boolean = false;
   private hasPreciseGpsFix: boolean = false;
+  private isAiEnabled: boolean = true;
 
   private currentLocation: Coordinates = {
     latitude: 28.6139,
@@ -64,6 +67,8 @@ export class PDREngine {
     motionVariance: 0,
     walkDirection: 'FORWARD',
     directionMode: 'AUTO',
+    aiDisplacementMeters: 0,
+    aiHeadingDeltaDeg: 0,
   };
 
   private config: CalibrationConfig = {
@@ -122,11 +127,17 @@ export class PDREngine {
       pathHistory: [...this.pathHistory],
       config: { ...this.config },
       hasReceivedFix: this.hasReceivedFix,
+      isAiEnabled: this.isAiEnabled,
     };
   }
 
   public setMode(newMode: TrackingMode) {
     this.mode = newMode;
+    this.notify();
+  }
+
+  public toggleAiMode() {
+    this.isAiEnabled = !this.isAiEnabled;
     this.notify();
   }
 
@@ -271,7 +282,21 @@ export class PDREngine {
     const filteredMag = this.magnitudeLpf.filter(dynamicAcc);
     const gyroMag = Math.sqrt(gx * gx + gy * gy + gz * gz);
 
-    // Run step detector with ZUPT stationary gating
+    // 1. Feed real-time 6-DOF stream into Transformer WebGPU AI Engine
+    aiInertialEngine.processImuSample(
+      ax,
+      ay,
+      az,
+      gx,
+      gy,
+      gz,
+      this.currentLocation.latitude,
+      this.currentLocation.longitude,
+      this.headingData.heading,
+      timestamp
+    );
+
+    // 2. Kinematic Step Detector with ZUPT stationary gating
     const detection = this.stepDetector.processSample(filteredMag, ay, timestamp);
 
     this.stepMetrics.isStationary = detection.isStationary;
@@ -302,7 +327,14 @@ export class PDREngine {
     this.pushMotionSample(sample);
 
     if (detection.isStep && !detection.isStationary) {
-      this.handleStepDetected(detection.stepLength, effectiveDirection, timestamp);
+      // If AI model has inferred a neural vector, blend it with Weinberg model
+      const aiMetrics = aiInertialEngine.getMetrics();
+      let stepLen = detection.stepLength;
+      if (aiMetrics.isLoaded && aiMetrics.lastDisplacement.magnitude > 0.1) {
+        stepLen = Math.max(0.35, Math.min(1.4, (stepLen * 0.4) + (aiMetrics.lastDisplacement.magnitude * 0.6)));
+        this.stepMetrics.aiDisplacementMeters = aiMetrics.lastDisplacement.magnitude;
+      }
+      this.handleStepDetected(stepLen, effectiveDirection, timestamp);
     } else {
       if (detection.isStationary && Date.now() - this.stepMetrics.lastStepTimestamp > 2500) {
         this.stepMetrics.cadence = 0;
@@ -340,7 +372,7 @@ export class PDREngine {
         ? normalizeDegrees(this.headingData.heading + 180)
         : this.headingData.heading;
 
-    if (this.mode === 'DEAD_RECKONING' || this.mode === 'SEARCHING_GPS') {
+    if (this.mode === 'DEAD_RECKONING' || this.mode === 'AI_TRANSFORMER' || this.mode === 'SEARCHING_GPS') {
       const { lat: newLat, lng: newLng } = calculateDestinationPoint(
         this.currentLocation.latitude,
         this.currentLocation.longitude,
@@ -348,20 +380,22 @@ export class PDREngine {
         effectiveBearing
       );
 
+      const targetMode: TrackingMode = this.isAiEnabled ? 'AI_TRANSFORMER' : 'DEAD_RECKONING';
+
       this.currentLocation = {
         ...this.currentLocation,
         latitude: newLat,
         longitude: newLng,
         speed: speedMps,
         heading: this.headingData.heading,
-        accuracy: Math.min(50, (this.currentLocation.accuracy ?? 10) + 0.2),
+        accuracy: Math.min(50, (this.currentLocation.accuracy ?? 10) + 0.15),
       };
 
       this.recordPathPoint(
         newLat,
         newLng,
         timestamp,
-        'DEAD_RECKONING',
+        targetMode,
         this.headingData.heading,
         direction,
         this.currentLocation.accuracy ?? undefined,
@@ -420,12 +454,15 @@ export class PDREngine {
       motionVariance: 0,
       walkDirection: 'FORWARD',
       directionMode: this.stepMetrics.directionMode,
+      aiDisplacementMeters: 0,
+      aiHeadingDeltaDeg: 0,
     };
     this.stepTimestamps = [];
     this.pathHistory = [];
     this.stepDetector.reset();
     this.gravityFilter.reset();
     this.magnitudeLpf.reset();
+    aiInertialEngine.reset();
     this.notify();
   }
 
