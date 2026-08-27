@@ -1,6 +1,6 @@
 /**
- * Geodesy utility functions using Great-Circle / Spherical Earth models
- * Mean Earth Radius WGS-84: R = 6,371,000 meters (or equatorial 6,378,137m)
+ * Geodesy utility functions using Great-Circle / Spherical Earth models.
+ * Mean Earth Radius WGS-84: R = 6,371,000 meters
  */
 
 export const EARTH_RADIUS_METERS = 6371000;
@@ -14,8 +14,7 @@ export function radiansToDegrees(radians: number): number {
 }
 
 /**
- * Calculates the destination point given start point, distance (meters), and bearing (degrees clockwise from North).
- * Uses the spherical Earth direct geodetic formula.
+ * Calculates destination point given start point, distance (meters), and bearing (degrees).
  */
 export function calculateDestinationPoint(
   lat: number,
@@ -25,7 +24,7 @@ export function calculateDestinationPoint(
 ): { lat: number; lng: number } {
   if (distanceMeters === 0) return { lat, lng };
 
-  const delta = distanceMeters / EARTH_RADIUS_METERS; // angular distance in radians
+  const delta = distanceMeters / EARTH_RADIUS_METERS;
   const theta = degreesToRadians(bearingDegrees);
 
   const phi1 = degreesToRadians(lat);
@@ -44,7 +43,6 @@ export function calculateDestinationPoint(
   const lambda2 = lambda1 + Math.atan2(y, x);
 
   const destLat = radiansToDegrees(phi2);
-  // Normalize longitude to -180 .. +180
   const destLng = ((radiansToDegrees(lambda2) + 540) % 360) - 180;
 
   return {
@@ -54,7 +52,7 @@ export function calculateDestinationPoint(
 }
 
 /**
- * Calculates the great-circle distance between two points using the Haversine formula (in meters).
+ * Calculates great-circle distance between two points using the Haversine formula (in meters).
  */
 export function calculateHaversineDistance(
   lat1: number,
@@ -74,35 +72,4 @@ export function calculateHaversineDistance(
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
   return EARTH_RADIUS_METERS * c;
-}
-
-/**
- * Calculates initial bearing from point 1 to point 2 in degrees (0 - 360).
- */
-export function calculateBearing(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number
-): number {
-  const phi1 = degreesToRadians(lat1);
-  const phi2 = degreesToRadians(lat2);
-  const deltaLambda = degreesToRadians(lng2 - lng1);
-
-  const y = Math.sin(deltaLambda) * Math.cos(phi2);
-  const x =
-    Math.cos(phi1) * Math.sin(phi2) -
-    Math.sin(phi1) * Math.cos(phi2) * Math.cos(deltaLambda);
-
-  const theta = Math.atan2(y, x);
-  return (radiansToDegrees(theta) + 360) % 360;
-}
-
-/**
- * Formats coordinates into standard high-precision string
- */
-export function formatCoordinates(lat: number, lng: number): string {
-  const latDir = lat >= 0 ? 'N' : 'S';
-  const lngDir = lng >= 0 ? 'E' : 'W';
-  return `${Math.abs(lat).toFixed(6)}° ${latDir}, ${Math.abs(lng).toFixed(6)}° ${lngDir}`;
 }

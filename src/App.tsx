@@ -71,7 +71,6 @@ export const App: React.FC = () => {
             gpsEnabled={gpsEnabled}
             onToggleGps={toggleGps}
             onRequestPermissions={requestSensorPermissions}
-            onLocateNow={acquireCurrentLocation}
           />
 
           {/* Step 2 & 3: Sensor Gaussian-Smoothed Waveforms Display */}

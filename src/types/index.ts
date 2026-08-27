@@ -13,8 +13,8 @@ export interface HeadingData {
   heading: number; // 0 - 360 degrees clockwise from North
   rawHeading: number;
   source: 'webkit' | 'absolute' | 'rotation-matrix' | 'alpha' | 'simulated' | 'fallback';
-  pitch: number; // Beta (-180 to 180)
-  roll: number; // Gamma (-90 to 90)
+  pitch: number;
+  roll: number;
   calibrated: boolean;
 }
 
@@ -56,7 +56,6 @@ export interface AIInferenceMetrics {
   avgLatencyMs: number;
   totalInferences: number;
   lastDisplacement: { dx: number; dy: number; magnitude: number };
-  // Instantaneous kinematic values directly from latest inference
   instantaneousSpeedMps: number;
   instantaneousSpeedKmh: number;
   instantaneousTurnDeltaDeg: number;
@@ -74,11 +73,6 @@ export interface PathPoint {
   heading: number;
   accuracy?: number;
   displacement?: number;
-}
-
-export interface GaussianConfig {
-  kernelSize: number; // Gaussian window size (e.g. 7)
-  sigma: number; // Gaussian standard deviation (e.g. 1.2)
 }
 
 export interface SensorStatus {

@@ -6,7 +6,6 @@ import {
   MapPin,
   Radio,
   ShieldAlert,
-  Navigation,
   Cpu,
   Zap,
   Activity,
@@ -22,7 +21,6 @@ interface TelemetryPanelProps {
   gpsEnabled: boolean;
   onToggleGps: () => void;
   onRequestPermissions: () => void;
-  onLocateNow?: () => void;
 }
 
 function getCardinalDirection(deg: number): string {
@@ -41,7 +39,6 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
   gpsEnabled,
   onToggleGps,
   onRequestPermissions,
-  onLocateNow,
 }) => {
   const isAi = mode === 'AI_TRANSFORMER';
   const cardinal = getCardinalDirection(headingData.heading);
@@ -67,7 +64,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
               }`}
             />
             {isAi
-              ? 'AI TRANSFORMER (WEBGPU)'
+              ? 'AI MLP (WEBGPU)'
               : mode === 'GPS'
               ? 'GPS ACTIVE'
               : 'ACQUIRING POSITION'}
@@ -76,23 +73,12 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           {/* Pipeline Tag */}
           <div className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase bg-indigo-950/60 text-indigo-300 border border-indigo-800/60">
             <Activity className="w-2.5 h-2.5 text-indigo-400" />
-            <span>GAUSSIAN SMOOTHED</span>
+            <span>GAUSSIAN + ZUPT</span>
           </div>
         </div>
 
         {/* Controls */}
         <div className="flex items-center gap-2">
-          {onLocateNow && (
-            <button
-              onClick={onLocateNow}
-              className="px-2.5 py-1.5 bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 rounded-lg text-xs font-mono flex items-center gap-1 transition-colors"
-              title="Force GPS Position Search"
-            >
-              <Navigation className="w-3.5 h-3.5" />
-              <span>LOCATE</span>
-            </button>
-          )}
-
           <button
             onClick={onToggleGps}
             className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium transition-all flex items-center gap-1.5 border ${
@@ -109,7 +95,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
             <button
               onClick={onRequestPermissions}
               className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-mono flex items-center gap-1"
-              title="Grant iOS Motion &amp; Orientation Permissions"
+              title="Grant Sensor Permissions"
             >
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
               <span>SENSORS</span>
@@ -135,7 +121,7 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
         </div>
       </div>
 
-      {/* Main Telemetry Grid (Step 3: Display Data) */}
+      {/* Main Telemetry Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {/* Metric 1: Location Coordinates */}
         <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg">
@@ -178,12 +164,12 @@ export const TelemetryPanel: React.FC<TelemetryPanelProps> = ({
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg text-slate-100 font-bold">
-              {aiMetrics?.lastDisplacement.magnitude.toFixed(2) ?? '0.00'}
+              {aiMetrics?.isStationary ? '0.00' : (aiMetrics?.lastDisplacement.magnitude.toFixed(2) ?? '0.00')}
             </span>
             <span className="font-mono text-xs text-slate-400">m / frame</span>
           </div>
           <div className="text-[10px] font-mono text-indigo-400/80 truncate">
-            dX: {aiMetrics?.lastDisplacement.dx.toFixed(2) ?? '0.00'} | dY: {aiMetrics?.lastDisplacement.dy.toFixed(2) ?? '0.00'}
+            {aiMetrics?.isStationary ? 'ZUPT Locked' : `dX: ${aiMetrics?.lastDisplacement.dx.toFixed(2) ?? '0.00'} | dY: ${aiMetrics?.lastDisplacement.dy.toFixed(2) ?? '0.00'}`}
           </div>
         </div>
 

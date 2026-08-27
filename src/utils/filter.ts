@@ -1,7 +1,6 @@
 /**
  * Gaussian Signal Smoothing Filters for 6-DOF Inertial Sensors.
- * Convolves raw accelerometer and gyroscope streams with a 1D discrete Gaussian kernel
- * before passing sequences to the ONNX Transformer model.
+ * Convolves raw accelerometer and gyroscope streams with a 1D discrete Gaussian kernel.
  */
 
 export class GaussianFilter1D {
@@ -32,12 +31,6 @@ export class GaussianFilter1D {
     for (let i = 0; i < this.kernel.length; i++) {
       this.kernel[i] /= sum;
     }
-  }
-
-  public setParameters(kernelSize: number, sigma: number) {
-    this.kernelSize = Math.max(3, kernelSize % 2 === 0 ? kernelSize + 1 : kernelSize);
-    this.sigma = Math.max(0.1, sigma);
-    this.generateKernel();
   }
 
   public process(val: number): number {

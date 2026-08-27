@@ -5,7 +5,7 @@
  * 1. Sensor data is recorded (Accelerometer, Gyroscope, Heading)
  * 2. Sensor data is smoothened using Gaussian filtering
  * 3. Data is displayed via state subscribers
- * 4. Data is passed through ONNX Transformer
+ * 4. Data is passed through ONNX MLP (with ZUPT Gate)
  * 5. Output displacement is plotted onto the map
  */
 
@@ -70,13 +70,6 @@ export class TrackerEngine {
   private readonly maxPathPoints = 800;
 
   private listeners: Set<TrackerStateListener> = new Set();
-
-  constructor(initialLocation?: { lat: number; lng: number }) {
-    if (initialLocation) {
-      this.currentLocation.latitude = initialLocation.lat;
-      this.currentLocation.longitude = initialLocation.lng;
-    }
-  }
 
   public subscribe(listener: TrackerStateListener): () => void {
     this.listeners.add(listener);
@@ -206,7 +199,7 @@ export class TrackerEngine {
    * 1. Record 6-DOF sensor sample
    * 2. Gaussian smoothing of channels
    * 3. Display data on HUD / Waveform
-   * 4. Feed to ONNX Transformer
+   * 4. Feed to ONNX MLP
    * 5. Plot ONNX output displacement
    */
   public processDeviceMotion(
@@ -244,12 +237,12 @@ export class TrackerEngine {
       rawGx: Number(gx.toFixed(1)),
       rawGy: Number(gy.toFixed(1)),
       rawGz: Number(gz.toFixed(1)),
-      ax: Number(smoothed.smoothedAx.toFixed(2)),
-      ay: Number(smoothed.smoothedAy.toFixed(2)),
-      az: Number(smoothed.smoothedAz.toFixed(2)),
-      gx: Number(smoothed.smoothedGx.toFixed(1)),
-      gy: Number(smoothed.smoothedGy.toFixed(1)),
-      gz: Number(smoothed.smoothedGz.toFixed(1)),
+      ax: Number(smoothed.ax.toFixed(2)),
+      ay: Number(smoothed.ay.toFixed(2)),
+      az: Number(smoothed.az.toFixed(2)),
+      gx: Number(smoothed.gx.toFixed(1)),
+      gy: Number(smoothed.gy.toFixed(1)),
+      gz: Number(smoothed.gz.toFixed(1)),
       rawMagnitude: Number(rawMag.toFixed(2)),
       filteredMagnitude: Number(smoothed.accelMagnitude.toFixed(2)),
       gyroMagnitude: Number(smoothed.gyroMagnitude.toFixed(1)),
@@ -381,5 +374,4 @@ export class TrackerEngine {
   }
 }
 
-// Global Singleton Instance
 export const pdrEngine = new TrackerEngine();
