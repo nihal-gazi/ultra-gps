@@ -36,10 +36,13 @@ export function useLocationTracker() {
       setAiMetrics(newAiMetrics);
     });
 
-    // Auto-load ONNX MLP Model with WebGPU / WASM execution provider
-    aiInertialEngine.initializeModel();
+    // Defer model loading slightly to ensure fluid initial mobile mount
+    const timer = setTimeout(() => {
+      aiInertialEngine.initializeModel();
+    }, 100);
 
     return () => {
+      clearTimeout(timer);
       unsubTracker();
       unsubAi();
     };
@@ -128,15 +131,20 @@ export function useLocationTracker() {
       const gy = rot?.gamma ?? 0;
       const gz = rot?.alpha ?? 0;
 
-      const hasGyroData = rot !== null && (rot.alpha !== null || rot.beta !== null || rot.gamma !== null);
+      // Throttle sensor status updates to max 2Hz to stop React re-render thrashing
+      const now = performance.now();
+      if (!sensorStatus.hasHardwareMotion || now - simPhaseRef.current > 500) {
+        simPhaseRef.current = now;
+        const hasGyroData = rot !== null && (rot.alpha !== null || rot.beta !== null || rot.gamma !== null);
 
-      setSensorStatus((prev) => ({
-        ...prev,
-        accelAvailable: true,
-        gyroAvailable: hasGyroData || prev.gyroAvailable,
-        hasHardwareMotion: true,
-        motionEventCount: motionCountRef.current,
-      }));
+        setSensorStatus((prev) => ({
+          ...prev,
+          accelAvailable: true,
+          gyroAvailable: hasGyroData || prev.gyroAvailable,
+          hasHardwareMotion: true,
+          motionEventCount: motionCountRef.current,
+        }));
+      }
 
       // Pass directly to the 5-step tracker pipeline
       pdrEngine.processDeviceMotion(ax, ay, az, gx, gy, gz, Date.now());
@@ -145,20 +153,17 @@ export function useLocationTracker() {
     const handleAbsoluteOrientation = (event: DeviceOrientationEvent) => {
       if (event.alpha === null) return;
       hasAbsoluteOrientationRef.current = true;
-      setSensorStatus((prev) => ({ ...prev, gyroAvailable: true }));
       pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, undefined, true);
     };
 
     const handleStandardOrientation = (event: DeviceOrientationEvent) => {
       const webkitHeading = (event as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
       if (webkitHeading !== undefined && !isNaN(webkitHeading)) {
-        setSensorStatus((prev) => ({ ...prev, gyroAvailable: true }));
         pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, webkitHeading, true);
         return;
       }
 
       if (!hasAbsoluteOrientationRef.current && event.alpha !== null) {
-        setSensorStatus((prev) => ({ ...prev, gyroAvailable: true }));
         pdrEngine.updateOrientation(event.alpha, event.beta, event.gamma, undefined, false);
       }
     };

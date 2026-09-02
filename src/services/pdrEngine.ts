@@ -7,6 +7,8 @@
  * 3. Data is displayed via state subscribers
  * 4. Data is passed through ONNX MLP (with ZUPT Gate)
  * 5. Output displacement is plotted onto the map
+ * 
+ * Optimized with throttled state notifications to prevent React re-render thrashing.
  */
 
 import type {
@@ -65,11 +67,13 @@ export class TrackerEngine {
   };
 
   private recentMotion: MotionSample[] = [];
-  private readonly maxMotionSamples = 80;
+  private readonly maxMotionSamples = 60;
   private pathHistory: PathPoint[] = [];
   private readonly maxPathPoints = 800;
 
   private listeners: Set<TrackerStateListener> = new Set();
+  private lastNotifyTime: number = 0;
+  private readonly notifyThrottleMs: number = 80; // ~12.5Hz max for UI text
 
   public subscribe(listener: TrackerStateListener): () => void {
     this.listeners.add(listener);
@@ -79,7 +83,12 @@ export class TrackerEngine {
     };
   }
 
-  private notify() {
+  private notify(force: boolean = false) {
+    const now = performance.now();
+    if (!force && now - this.lastNotifyTime < this.notifyThrottleMs) {
+      return;
+    }
+    this.lastNotifyTime = now;
     const state = this.getState();
     this.listeners.forEach((listener) => listener(state));
   }
@@ -90,15 +99,15 @@ export class TrackerEngine {
       currentLocation: { ...this.currentLocation },
       headingData: { ...this.headingData },
       navigationMetrics: { ...this.navigationMetrics },
-      recentMotion: [...this.recentMotion],
-      pathHistory: [...this.pathHistory],
+      recentMotion: this.recentMotion,
+      pathHistory: this.pathHistory,
       hasReceivedFix: this.hasReceivedFix,
     };
   }
 
   public setMode(newMode: TrackingMode) {
     this.mode = newMode;
-    this.notify();
+    this.notify(true);
   }
 
   public setInitialApproximateLocation(lat: number, lng: number) {
@@ -108,7 +117,7 @@ export class TrackerEngine {
     this.currentLocation.longitude = lng;
     this.hasReceivedFix = true;
     this.recordPathPoint(lat, lng, Date.now(), 'SEARCHING_GPS', this.headingData.heading, 500);
-    this.notify();
+    this.notify(true);
   }
 
   public updateGpsPosition(coords: GeolocationCoordinates, timestamp: number = Date.now()) {
@@ -158,7 +167,7 @@ export class TrackerEngine {
       );
     }
 
-    this.notify();
+    this.notify(true);
   }
 
   public updateOrientation(
@@ -191,7 +200,7 @@ export class TrackerEngine {
       calibrated: true,
     };
 
-    this.notify();
+    this.notify(false);
   }
 
   /**
@@ -213,7 +222,6 @@ export class TrackerEngine {
   ) {
     const rawMag = Math.sqrt(ax * ax + ay * ay + az * az);
 
-    // Steps 1, 2, 4: Record, Gaussian Smooth, and Pass into ONNX
     const smoothed = aiInertialEngine.processSensorSample(
       ax,
       ay,
@@ -223,12 +231,10 @@ export class TrackerEngine {
       gz,
       timestamp,
       (displacementMeters, speedMps, _headingDeltaDeg) => {
-        // Step 5: Plot ONNX displacement output onto the map
         this.handleOnnxOdometryUpdate(displacementMeters, speedMps, timestamp);
       }
     );
 
-    // Step 3: Record sample for live HUD waveform display
     const sample: MotionSample = {
       timestamp,
       rawAx: Number(ax.toFixed(2)),
@@ -248,8 +254,12 @@ export class TrackerEngine {
       gyroMagnitude: Number(smoothed.gyroMagnitude.toFixed(1)),
     };
 
-    this.pushMotionSample(sample);
-    this.notify();
+    this.recentMotion.push(sample);
+    if (this.recentMotion.length > this.maxMotionSamples) {
+      this.recentMotion.shift();
+    }
+
+    this.notify(false);
   }
 
   /**
@@ -260,7 +270,7 @@ export class TrackerEngine {
       this.navigationMetrics.currentSpeedMps = 0;
       this.navigationMetrics.currentSpeedKmh = 0;
       this.navigationMetrics.lastDisplacementMeters = 0;
-      this.notify();
+      this.notify(true);
       return;
     }
 
@@ -299,7 +309,7 @@ export class TrackerEngine {
       );
     }
 
-    this.notify();
+    this.notify(true);
   }
 
   public injectSimulatedSample(ax: number = 0.5, ay: number = 1.8, az: number = 9.81, gx: number = 5.0, gy: number = 2.0, gz: number = 1.0) {
@@ -314,7 +324,7 @@ export class TrackerEngine {
       rawHeading: norm,
       source: 'simulated',
     };
-    this.notify();
+    this.notify(true);
   }
 
   public setManualLocation(lat: number, lng: number) {
@@ -325,7 +335,7 @@ export class TrackerEngine {
       longitude: lng,
     };
     this.recordPathPoint(lat, lng, Date.now(), this.mode, this.headingData.heading, 5);
-    this.notify();
+    this.notify(true);
   }
 
   public resetTracking() {
@@ -339,14 +349,7 @@ export class TrackerEngine {
     };
     this.pathHistory = [];
     aiInertialEngine.reset();
-    this.notify();
-  }
-
-  private pushMotionSample(sample: MotionSample) {
-    this.recentMotion.push(sample);
-    if (this.recentMotion.length > this.maxMotionSamples) {
-      this.recentMotion.shift();
-    }
+    this.notify(true);
   }
 
   private recordPathPoint(
